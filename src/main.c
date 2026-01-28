@@ -2,7 +2,7 @@
 #include "mpu89.h"
 #include "gd32f4xx.h"
 
-#define FAKE_DISPLAY_FIRQ
+//#define FAKE_DISPLAY_FIRQ
 #define ROM_IN_C_FILE_ARRAY
 
 #ifdef ROM_IN_C_FILE_ARRAY
@@ -59,87 +59,7 @@ uint32_t TwoMHzTicksSinceStart() {
     return accumulated_ticks;
 }
 
-void InitPE9_PushPull(void) {
-    // 1. Enable Port E Clock
-    RCU_AHB1EN |= (1U << 4);
 
-    // 2. Set Mode to Output (01) for Pin 9
-    // Clear bits 18-19, set bit 18
-    GPIO_CTL(GPIOE) &= ~(3U << 18);
-    GPIO_CTL(GPIOE) |=  (1U << 18);
-
-    // 3. Set Output Type to Push-Pull (0) for Pin 9
-    // Explicitly clear bit 9
-    GPIO_OMODE(GPIOE) &= ~(1U << 9);
-
-    // 4. Set Speed to Very High (11) for Pin 9
-    GPIO_OSPD(GPIOE) |= (3U << 18);
-
-    // 5. Preset Low
-    GPIO_BC(GPIOE) = (1U << 9);
-}
-
-void PC4OD() {
-/* 1. Ensure clock is on */
-rcu_periph_clock_enable(RCU_GPIOC);
-
-/* 2. Set the Output Type FIRST (Open-Drain) */
-gpio_output_options_set(GPIOC, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_9);
-
-/* 3. Set the Mode LAST (Output) */
-gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_9);
-}
-
-void InitPC4_PushPull(void) {
-    
-    // 1. Enable Port C Clock (Bit 2)
-    RCU_AHB1EN |= (1U << 2);
-
-    // 2. Set Mode to Output (01) for Pin 4
-    // Bits 8 and 9 (Pin 4 << 1)
-    GPIO_CTL(GPIOC) &= ~(3U << 8);
-    GPIO_CTL(GPIOC) |=  (1U << 8);
-
-    // 3. Set Output Type to Push-Pull (0)
-    // Clear bit 4
-    GPIO_OMODE(GPIOC) &= ~(1U << 4);
-
-    // 4. Set Speed to Very High (11)
-    GPIO_OSPD(GPIOC) |= (3U << 8);
-
-    // 5. Initial State: LOW
-    GPIO_BC(GPIOC) = (1U << 4);
-
-}
-
-#include "gd32f4xx.h"
-
-
-void pc4_tristate_init(void) {
-    rcu_periph_clock_enable(RCU_GPIOC);
-    
-    // Ensure the output latch is 0 so it pulls to GND when we enable Output mode
-    gpio_bit_reset(GPIOC, GPIO_PIN_4);
-    
-    // Start as Input (High-Z) so the 1.5k resistor pulls the clock line HIGH
-    gpio_mode_set(GPIOC, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_4);
-}
-
-void strobe_74ls374(void) {
-    // 1. Switch to Push-Pull Output (Drives PC4 to 0V)
-    // This is the leading edge of your clock pulse
-    gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_4);
-    gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_4);
-
-    // 2. Pulse Width Delay
-    // LS logic needs ~15-20ns; this loop is plenty for a 74LS374
-    for(volatile uint32_t i = 0; i < 50; i++);
-
-    // 3. Switch back to Input (High-Z)
-    // The 1.5k resistor pulls the line back to 5V
-    // THIS IS THE RISING EDGE THAT LATCHES THE DATA
-    gpio_mode_set(GPIOC, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_4);
-}
 
 
 #ifdef FAKE_DISPLAY_FIRQ
@@ -155,11 +75,107 @@ void UpdateDisplayTracking() {
 }
 #endif
 
+
+
+
+void oldInitTimer0PWM(void) {
+    // 1. Enable Clocks
+    rcu_periph_clock_enable(RCU_GPIOA);
+    rcu_periph_clock_enable(RCU_TIMER0);
+
+    // 2. Configure Pins for AF1 (TIMER0)
+    gpio_af_set(GPIOA, GPIO_AF_1, GPIO_PIN_9 | GPIO_PIN_10);
+    gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_9 | GPIO_PIN_10);
+    gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_9 | GPIO_PIN_10);
+
+    // 3. Timer0 Base Configuration
+    timer_parameter_struct timer_init_para;
+    timer_deinit(TIMER0);
+
+    // For 2MHz output in Toggle Mode, we need 4MHz toggle events
+    // 240MHz / 60 = 4MHz. Period = 60 - 1 = 59
+    timer_init_para.prescaler         = 0;
+    timer_init_para.alignedmode       = TIMER_COUNTER_EDGE;
+    timer_init_para.counterdirection  = TIMER_COUNTER_UP;
+    timer_init_para.period            = 59; 
+    timer_init_para.clockdivision     = TIMER_CKDIV_DIV1;
+    timer_init_para.repetitioncounter = 0;
+    timer_init(TIMER0, &timer_init_para);
+
+    // 4. Channel Configuration
+    timer_oc_parameter_struct timer_oc_init_para;
+    timer_oc_init_para.outputstate  = TIMER_CCX_ENABLE;
+    timer_oc_init_para.ocpolarity   = TIMER_OC_POLARITY_HIGH;
+    timer_oc_init_para.ocidlestate  = TIMER_OC_IDLE_STATE_LOW;
+
+    // PA9 (CH1): Toggles at counter match 0
+    timer_channel_output_config(TIMER0, TIMER_CH_1, &timer_oc_init_para);
+    timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_1, 0);
+    timer_channel_output_mode_config(TIMER0, TIMER_CH_1, TIMER_OC_MODE_TOGGLE);
+
+    // PA10 (CH2): Toggles at counter match 30 (90 degree shift)
+    // 125ns delay = 30 ticks @ 240MHz
+    timer_channel_output_config(TIMER0, TIMER_CH_2, &timer_oc_init_para);
+    timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_2, 30);
+    timer_channel_output_mode_config(TIMER0, TIMER_CH_2, TIMER_OC_MODE_TOGGLE);
+
+    // 5. Enable Main Output (Required for Advanced Timer0)
+    timer_primary_output_config(TIMER0, ENABLE);
+
+    // 6. Enable Timer
+    timer_enable(TIMER0);
+}
+
+void InitTimer0PWM(void) {
+    // 1. Enable Clocks
+    rcu_periph_clock_enable(RCU_GPIOA);
+    rcu_periph_clock_enable(RCU_TIMER0);
+
+    // 2. Configure Pins for AF1 (TIMER0)
+    gpio_af_set(GPIOA, GPIO_AF_1, GPIO_PIN_9 | GPIO_PIN_10);
+    gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO_PIN_9 | GPIO_PIN_10);
+    gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_9 | GPIO_PIN_10);
+
+    // 3. Timer0 Base Configuration
+    timer_parameter_struct timer_init_para;
+    timer_deinit(TIMER0);
+
+    // 200MHz / 50 = 4MHz toggle events (results in 2MHz waveform)
+    // Period = 50 - 1 = 49
+    timer_init_para.prescaler         = 0;
+    timer_init_para.alignedmode       = TIMER_COUNTER_EDGE;
+    timer_init_para.counterdirection  = TIMER_COUNTER_UP;
+    timer_init_para.period            = 49; 
+    timer_init_para.clockdivision     = TIMER_CKDIV_DIV1;
+    timer_init_para.repetitioncounter = 0;
+    timer_init(TIMER0, &timer_init_para);
+
+    // 4. Channel Configuration
+    timer_oc_parameter_struct timer_oc_init_para;
+    timer_oc_init_para.outputstate  = TIMER_CCX_ENABLE;
+    timer_oc_init_para.ocpolarity   = TIMER_OC_POLARITY_HIGH;
+    timer_oc_init_para.ocidlestate  = TIMER_OC_IDLE_STATE_LOW;
+
+    // PA9 (CH1): Toggles at counter match 0
+    timer_channel_output_config(TIMER0, TIMER_CH_1, &timer_oc_init_para);
+    timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_1, 0);
+    timer_channel_output_mode_config(TIMER0, TIMER_CH_1, TIMER_OC_MODE_TOGGLE);
+
+    // PA10 (CH2): Toggles at counter match 25 (90 degree shift)
+    // 125ns delay = 25 ticks @ 200MHz
+    timer_channel_output_config(TIMER0, TIMER_CH_2, &timer_oc_init_para);
+    timer_channel_output_pulse_value_config(TIMER0, TIMER_CH_2, 25);
+    timer_channel_output_mode_config(TIMER0, TIMER_CH_2, TIMER_OC_MODE_TOGGLE);
+
+    // 5. Enable Main Output (Required for Advanced Timer0)
+    timer_primary_output_config(TIMER0, ENABLE);
+
+    // 6. Enable Timer
+    timer_enable(TIMER0);
+}
+
+
 int main(void) {    
-    //initialise_monitor_handles();
-
-    //printf("Semihosting Initialized! Waiting for emulator loop...\n");
-
     // LED Setup
     RCU_AHB1EN |= (1U << 4);              
     GPIO_CTL(GPIOE) &= ~(3U << (14 * 2)); 
@@ -175,19 +191,24 @@ int main(void) {
     CPUSetCallbacks(MPUWrite8, MPURead8);
     MPUReset();
 
+    GPIO_BOP(GPIOC) = (1U << 0);
+
     EnableCycleCounter();
+    InitTimer0PWM();
     uint32_t lastTickCount = TwoMHzTicksSinceStart();
 #ifdef FAKE_DISPLAY_FIRQ
     uint32_t lastDisplayUpdateTicks = 0;
-#endif    
+#endif
+    bool FIRQHasBeenTriggered = false;
 
-    while (1) {
+    while (1) {        
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
 
         // Calculate how many 2MHz ticks have passed since we last checked
         int32_t ticksToRun = (int32_t)(currentTickCount - lastTickCount);
 
         if (ticksToRun > 0) {
+
             if (ticksToRun > 20000) ticksToRun = 20000;
 
             // Run the emulator for exactly that many ticks
@@ -204,7 +225,19 @@ int main(void) {
             if (lastDisplayUpdateTicks>=512) {
                 lastDisplayUpdateTicks = 0;
                 UpdateDisplayTracking();
-            }            
+            }
+#else
+            if (FIRQTriggered()) {
+                if (FIRQHasBeenTriggered==false) {
+                    // We haven't fired this FIRQ yet
+                    FIRQHasBeenTriggered = true;
+                    ASICFirqSourceDmd(true);
+                    MPUFIRQ();
+                }
+            } else {
+                // Reset for next FIRQ
+                FIRQHasBeenTriggered = false;
+            }
 #endif            
         }
 

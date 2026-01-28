@@ -1,7 +1,8 @@
 #include "mpu89.h"
 // Williams part number A-12742-xx
 
-bool DisplayUseShadowVariables = true;
+bool DisplayUseShadowVariables = false;
+//extern volatile uint32_t clock_idx;
 
 byte RAM[RAM_SIZE];
 byte *ROM;
@@ -27,84 +28,89 @@ uint32_t UpperAddressMask = 0x00000000;
 #include "gd32f4xx.h"
 
 void MCUPortInit(void) {
-    /* 1. Enable all necessary GPIO Clocks */
-    rcu_periph_clock_enable(RCU_GPIOA);
-    rcu_periph_clock_enable(RCU_GPIOB);
-    rcu_periph_clock_enable(RCU_GPIOC);
-    rcu_periph_clock_enable(RCU_GPIOD);
-    rcu_periph_clock_enable(RCU_GPIOE);
+  /* 1. Enable all necessary GPIO Clocks */
+  rcu_periph_clock_enable(RCU_GPIOA);
+  rcu_periph_clock_enable(RCU_GPIOB);
+  rcu_periph_clock_enable(RCU_GPIOC);
+  rcu_periph_clock_enable(RCU_GPIOD);
+  rcu_periph_clock_enable(RCU_GPIOE);
 
-    // ========================================================================
-    // PORT A
-    // ========================================================================
-    // IO (PA8): Push-Pull, Initial=1
-    gpio_bit_set(GPIOA, GPIO_PIN_8);
-    gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
-    gpio_mode_set(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_8);
+  // ========================================================================
+  // PORT A
+  // ========================================================================
+  // IO (PA8): Push-Pull, Initial=1
+  gpio_bit_set(GPIOA, GPIO_PIN_8);
+  gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
+  gpio_mode_set(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_8);
 
-    // ========================================================================
-    // PORT B
-    // ========================================================================
-    // Inputs: IRQ (PB0), FIRQ (PB1)
-    gpio_mode_set(GPIOB, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1);
+  // ========================================================================
+  // PORT B
+  // ========================================================================
+  // Inputs: IRQ (PB0), FIRQ (PB1)
+  gpio_mode_set(GPIOB, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1);
 
-    // Push-Pull Outputs: RW (PB2), DREN (PB4), RESET (PB5), DISEN (PB13)
-    // Initial=1
-    uint32_t pb_pp_pins = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_13;
-    gpio_bit_set(GPIOB, pb_pp_pins);
-    gpio_output_options_set(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pb_pp_pins);
-    gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_pp_pins);
+  // Push-Pull Outputs: RW (PB2), DREN (PB4), RESET (PB5), DISEN (PB13)
+  // Initial=1
+  uint32_t pb_pp_pins = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_13;
+  gpio_bit_set(GPIOB, pb_pp_pins);
+  gpio_output_options_set(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pb_pp_pins);
+  gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_pp_pins);
 
-    // Open-Drain Outputs: TRIAC (PB3), DISSTROBE (PB12), LAMPCol (PB14), LAMPRow (PB15), 
-    // DIS1 (PB8), DIS2 (PB9), DIS3 (PB10), DIS4 (PB11)
-    // Initial=1
-    uint32_t pb_od_pins = GPIO_PIN_3 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | 
-                          GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
-    gpio_bit_set(GPIOB, pb_od_pins);
-    gpio_output_options_set(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pb_od_pins);
-    gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_od_pins);
+  // Open-Drain Outputs: TRIAC (PB3), DISSTROBE (PB12), LAMPCol (PB14), LAMPRow (PB15), 
+  // DIS1 (PB8), DIS2 (PB9), DIS3 (PB10), DIS4 (PB11)
+  // Initial=1
+  uint32_t pb_od_pins = GPIO_PIN_3 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | 
+                        GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
+  gpio_bit_set(GPIOB, pb_od_pins);
+  gpio_output_options_set(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pb_od_pins);
+  gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_od_pins);
 
-    // ========================================================================
-    // PORT C
-    // ========================================================================
-    // Push-Pull Outputs: E (PC0), Q (PC1), WDEN (PC8), IOEN (PC9)
-    // Initial=1
-    gpio_bit_set(GPIOC, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_8 | GPIO_PIN_9);
-    gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_8 | GPIO_PIN_9);
-    gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_8 | GPIO_PIN_9);
+  // ========================================================================
+  // PORT C
+  // ========================================================================
+  // High Impedance (Floating Input): E (PC0), Q (PC1)
+  // Setting mode to INPUT with PUPD_NONE disconnects the pin driver and resistors.
+  gpio_mode_set(GPIOC, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1);
 
-    // Open-Drain Outputs: SOL1-4 (PC4, PC5, PC6, PC7)
-    // Initial=1
-    uint32_t pc_od_pins = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
-    gpio_bit_set(GPIOC, pc_od_pins);
-    gpio_output_options_set(GPIOC, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pc_od_pins);
-    gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pc_od_pins);
+  // Push-Pull Outputs: WDEN (PC8), IOEN (PC9)
+  // Initial=1
+  // (Note: Removed PC0 and PC1 from this list)
+  gpio_bit_set(GPIOC, GPIO_PIN_8 | GPIO_PIN_9);
+  gpio_output_options_set(GPIOC, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8 | GPIO_PIN_9);
+  gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_8 | GPIO_PIN_9);
 
-    // ========================================================================
-    // PORT D
-    // ========================================================================
-    // AddressBus (PD0-PD15): Push-Pull, Initial=0xFFFF
-    gpio_bit_set(GPIOD, GPIO_PIN_ALL);
-    gpio_output_options_set(GPIOD, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_ALL);
-    gpio_mode_set(GPIOD, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_ALL);
+  // Open-Drain Outputs: SOL1-4 (PC4, PC5, PC6, PC7)
+  // Initial=1
+  uint32_t pc_od_pins = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+  gpio_bit_set(GPIOC, pc_od_pins);
+  gpio_output_options_set(GPIOC, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pc_od_pins);
+  gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pc_od_pins);
 
-    // ========================================================================
-    // PORT E
-    // ========================================================================
-    // Inputs: DataBus (PE0-PE7), WDD (PE12)
-    gpio_mode_set(GPIOE, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | 
-                  GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_12);
+  // ========================================================================
+  // PORT D
+  // ========================================================================
+  // AddressBus (PD0-PD15): Push-Pull, Initial=0xFFFF
+  gpio_bit_set(GPIOD, GPIO_PIN_ALL);
+  gpio_output_options_set(GPIOD, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_ALL);
+  gpio_mode_set(GPIOD, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_ALL);
 
-    // Push-Pull Outputs: SWJMP (PE8), SWROW (PE10), SWDIR (PE11), Blank (PE13)
-    // Initial=1
-    gpio_bit_set(GPIOE, GPIO_PIN_8 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13);
-    
-    // SWCOL (PE9): Initial=0
-    gpio_bit_reset(GPIOE, GPIO_PIN_9);
-    
-    uint32_t pe_pp_pins = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13;
-    gpio_output_options_set(GPIOE, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pe_pp_pins);
-    gpio_mode_set(GPIOE, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pe_pp_pins);
+  // ========================================================================
+  // PORT E
+  // ========================================================================
+  // Inputs: DataBus (PE0-PE7), WDD (PE12)
+  gpio_mode_set(GPIOE, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | 
+                GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_12);
+
+  // Push-Pull Outputs: SWJMP (PE8), SWROW (PE10), SWDIR (PE11), Blank (PE13)
+  // Initial=1
+  gpio_bit_set(GPIOE, GPIO_PIN_8 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13);
+
+  // SWCOL (PE9): Initial=0
+  gpio_bit_reset(GPIOE, GPIO_PIN_9);
+
+  uint32_t pe_pp_pins = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13;
+  gpio_output_options_set(GPIOE, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pe_pp_pins);
+  gpio_mode_set(GPIOE, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pe_pp_pins);
 }
 #endif
 
@@ -260,58 +266,54 @@ byte MPUBankswitchedRead(unsigned int offset) {
 }
 
 
-// ---------------------------------------------------------
-// WRITE LOW PAGE (0x3800 - 0x39FF) -- INVERTED E/Q
-// ---------------------------------------------------------
+
 __attribute__((always_inline)) static inline void WriteDisplay(uint16_t address, uint8_t data) {
-    // 1. Setup Address & Data
-    SetAddressBus(address);
-    SetDataBus(data);
-    
-    // Ensure RW is Low (Write)
-    GPIO_BC(GPIOB) = (1U << 2);
+  // 1. Setup Phase (Bus is idle, Transceiver is off)
+  SetAddressBus(address);
+  SetDataBus(data);
+  SetDataBusDirection(true);
 
-    // Set IO line Low
-    GPIO_BC(GPIOA) = (1U << 8);
+  // 2. Wait for the "Safe Zone"
+  // We wait for E to go LOW ( !E is HIGH ). 
+  // This is the period where the RAM is NOT listening.
+  while (ReadESignal()); 
 
-    // Set IOEN line Low
-    GPIO_BC(GPIOC) = (1U << 9);
+  // 3. Prepare the Transceiver
+  // We set RW and Enable the 4245 while the RAM window is closed.
+  GPIO_BC(GPIOB) = (1U << 2); // RW Low
+  GPIO_BC(GPIOC) = (1U << 9); // IOEN Low
+  
+  // 4. Arm the !AddressValid (PORT)
+  // We drop IO now. !WE is still HIGH because !E is still HIGH.
+  GPIO_BC(GPIOA) = (1U << 8); // IO Low
+  
+  // 5. Trigger the Hardware Write
+  // Now we wait for E to go HIGH ( !E goes LOW ).
+  // The moment this happens, the OR gate (U19A) output drops.
+  // !WE goes LOW. The RAM starts its write.
+  while (!ReadESignal()); 
 
-    // ------------------------------------------------------
-    // THE INVERTED PULSE SEQUENCE (Idle High -> Active Low)
-    // ------------------------------------------------------
+  // 6. Stability Window
+  // The RAM is now in its transparent write state. 
+  // We stay here for a moment to ensure the signal is rock solid.
+  __NOP(); __NOP(); __NOP(); __NOP();
 
-    // 3. Drop Q (PC1) - Quadrature Lead
-    // Logic: !Q goes Low
-    GPIO_BC(GPIOC) = (1U << 1);
-    DelayQuarterCycle(); 
+  // 7. The Hardware Latch
+  // We wait for E to go LOW ( !E goes HIGH ).
+  // This hardware edge physically ENDS the write and latches the data.
+  // The 4245 is still actively driving the bus.
+  while (ReadESignal());
 
-    // 4. Drop E (PC0) - Enable
-    // Logic: !E goes Low. 
-    // This turns U7 Output HIGH, which enables the U2 Decoder.
-    GPIO_BC(GPIOC) = (1U << 0);
-    DelayQuarterCycle(); 
-
-    // 5. Raise Q (PC1) - Quadrature Trail
-    // Logic: !Q returns High
-    GPIO_BOP(GPIOC) = (1U << 1);
-    DelayQuarterCycle(); 
-
-    // 6. Raise E (PC0) - LATCH!
-    // Logic: !E returns High. 
-    // This turns U7 Output LOW, disabling U2 and latching the data.
-    GPIO_BOP(GPIOC) = (1U << 0);
-
-    // ------------------------------------------------------
-
-    // 7. Cleanup: Release IO (High)
-    GPIO_BOP(GPIOA) = (1U << 8);
-
-    // Set IOEN line high
-    GPIO_BOP(GPIOC) = (1U << 9);
-    
-    DelayQuarterCycle(); 
+  // 8. Data Hold & Cleanup
+  // The write is over. We wait a tiny bit to satisfy RAM hold times
+  // before we "let go" of the bus.
+  __NOP(); __NOP(); __NOP(); 
+  
+  GPIO_BOP(GPIOA) = (1U << 8); // IO High (!AddressValid released)
+  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High (4245 Tri-state)
+  GPIO_BOP(GPIOB) = (1U << 2); // RW High (Return to Read/Idle)
 }
+
 
 
 void MPUHardwareWrite(unsigned int offset, byte value) {
@@ -352,7 +354,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
     WriteDisplay(offset, value);
   } else if (offset==WPC_DMD_SCANLINE) {
     DisplayScanlineTrigger = value;
-    if (DisplayScanlineTrigger>31) DisplayScanlineTrigger = 31;
+//    if (DisplayScanlineTrigger>31) DisplayScanlineTrigger = 31;
     WriteDisplay(offset, value);
   }
 
@@ -361,6 +363,101 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
 
 
 
+__attribute__((always_inline)) static inline uint8_t ReadDisplay1(uint16_t address) {
+  uint8_t result;
+
+  SetAddressBus(address);    
+  // 2. Prepare for Read: Set Port E to Input (High-Z)
+  SetDataBusDirection(false); 
+  
+  // Set RW High (Read Mode)
+  GPIO_BOP(GPIOB) = (1U << 2);
+  // Set IOEN line Low
+  GPIO_BC(GPIOC) = (1U << 9);
+
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+
+  // 4. Trigger: Drop IO to enable the DMD address decoder
+  GPIO_BC(GPIOA) = (1U << 8);
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+
+  // Grab the data now while the board is still driving the bus
+  result = ReadDataBus();
+
+  // 7. Cleanup: Disable external hardware BEFORE restoring outputs
+  GPIO_BOP(GPIOA) = (1U << 8); // IO High
+  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High
+  GPIO_BC(GPIOB) = (1U << 2);  // Restore RW to Write (Default)
+
+  // 8. Safety: Give external hardware ~15ns to Hi-Z its buffers
+  DelayQuarterCycle();
+
+  // Restore Data Bus to Output
+  SetDataBusDirection(true);
+
+  return result;
+}
+
+__attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t address) {
+  uint8_t result;
+
+  // 1. Setup Phase
+  SetAddressBus(address);    
+  SetDataBusDirection(false); // MCU pins to Input (High-Z)
+
+  // 2. Prepare the Path
+  // Set RW High (Read Mode) and Enable Transceiver (B <- A)
+  GPIO_BOP(GPIOB) = (1U << 2);
+  GPIO_BC(GPIOC) = (1U << 9);
+
+  // 3. Wait for the "Safe Zone" (E Low / !E High)
+  // We wait for the inactive phase of the clock to "arm" the PORT signal.
+  while (ReadESignal()); 
+
+  // 4. Present PORT
+  // Drop IO to enable the DMD address decoder. 
+  // Data won't hit the bus yet because !E is still High.
+  GPIO_BC(GPIOA) = (1U << 8);
+
+  // 5. Hardware Trigger (Wait for E High / !E Low)
+  // The moment E goes High, the !WE/OE logic on the peripheral 
+  // opens up and the RAM/Buffers start driving the bus.
+  while (!ReadESignal()); 
+
+  // 6. Propagation Delay
+  // Give the data time to travel from the RAM through the 74LS245 
+  // and the 4245 to your MCU pins.
+  __NOP(); __NOP(); __NOP(); __NOP();
+
+  // 7. Sample the Bus
+  // Grab the data while E is solidly High and the bus is driven.
+  result = ReadDataBus();
+
+  // 8. Wait for Hardware Latch/End (Wait for E Low / !E High)
+  // This ensures we don't "let go" while the peripheral still thinks 
+  // a valid cycle is happening.
+  while (ReadESignal());
+
+  // 9. Cleanup
+  GPIO_BOP(GPIOA) = (1U << 8); // IO High
+  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High
+  GPIO_BC(GPIOB) = (1U << 2);  // Restore RW to Write (Default)
+
+  // 10. Turnaround Safety
+  // Small delay to ensure peripheral buffers are High-Z before MCU drives again.
+  __NOP(); __NOP(); 
+  SetDataBusDirection(true);
+
+  return result;
+}
+
+
+
+/*
 __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t address) {
     uint8_t result;
 
@@ -428,6 +525,8 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t addres
 
     return result;
 }
+*/
+
 
 byte MPUHardwareRead(unsigned int offset) {
 

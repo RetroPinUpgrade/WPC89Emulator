@@ -243,7 +243,7 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             SetDRLine(true);
             break;
 
-        case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:
+        case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:            
             ASIC_firqSourceDmd = false;
             break;
 

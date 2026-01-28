@@ -256,3 +256,18 @@ __attribute__((always_inline)) static inline void StrobeSol4(void) {
     GPIO_BOP(GPIOC) = (1U << 7);
 }
 
+__attribute__((always_inline)) static inline bool FIRQTriggered(void) {
+    return (GPIO_ISTAT(GPIOB) & GPIO_PIN_1) == 0;
+}
+
+__attribute__((always_inline)) static inline bool IRQTriggered(void) {
+    return (GPIO_ISTAT(GPIOB) & GPIO_PIN_0) == 0;
+}
+
+__attribute__((always_inline)) static inline bool ReadESignal(void) {
+    return (GPIO_ISTAT(GPIOA) & GPIO_PIN_10) != 0;
+}
+
+__attribute__((always_inline)) static inline bool ReadQSignal(void) {
+    return (GPIO_ISTAT(GPIOA) & GPIO_PIN_9) != 0;
+}
