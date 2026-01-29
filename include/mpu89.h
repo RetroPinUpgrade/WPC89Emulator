@@ -180,6 +180,8 @@ __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     // 2. Hold Low (Pulse Width: ~33ns)
     // 74LS74 typically needs min 25ns low time.
     DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
     // Since PB15 is Open Drain, this switches the pin to Hi-Z.
@@ -193,6 +195,8 @@ __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     GPIO_BC(GPIOB) = (1U << 14);
 
     // 2. Hold Low (~33ns)
+    DelayQuarterCycle();
+    DelayQuarterCycle();
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)

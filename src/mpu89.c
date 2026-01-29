@@ -16,7 +16,6 @@ byte DisplayActivePage = 0;
 byte DisplayNextActivePage = 0;
 byte DisplayScanlineTrigger = 31;
 byte DisplayCurrentScanline = 0;
-bool BlankingOn = true;
 int memoryWrites;
 int protectedMemoryWriteAttempts = 0;
 int ticksIrq = 0;
@@ -131,9 +130,6 @@ bool MPUInit() {
   protectedMemoryWriteAttempts = 0;
   memoryWrites = 0;
   UpperAddressMask = 0x00000000;
-
-  SetBlanking(true);
-  BlankingOn = true;
   ROM = NULL;
   ROMSize = 0;
 
@@ -149,8 +145,6 @@ void MPUReset() {
   memoryWrites = 0;
   CPUReset();
   ASICReset();
-  SetBlanking(true);
-  BlankingOn = true;
   DisplayLowPage = 0;
   DisplayHighPage = 0;
   DisplayLowPageStartAddress = &DisplayRAM[DisplayLowPage*512];
@@ -319,11 +313,6 @@ __attribute__((always_inline)) static inline void WriteDisplay(uint16_t address,
 void MPUHardwareWrite(unsigned int offset, byte value) {
   // write/mirror value to ram, so its visible using the memory monitor
   RAM[offset] = value;
-
-  if (BlankingOn) {
-    SetBlanking(false);
-    BlankingOn = false;
-  }
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     ASICWrite(offset, value);
