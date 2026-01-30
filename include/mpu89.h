@@ -173,20 +173,21 @@ __attribute__((always_inline)) static inline void SetBlanking(bool high) {
     }
 }
 
+
+
 __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     // 1. Drive Low (Prepare for edge)
     GPIO_BC(GPIOB) = (1U << 15);
 
-    // 2. Hold Low (Pulse Width: ~33ns)
-    // 74LS74 typically needs min 25ns low time.
-    DelayQuarterCycle();
-    DelayQuarterCycle();
+    // 2. Hold Low 
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
     // Since PB15 is Open Drain, this switches the pin to Hi-Z.
     // The rising edge sharpness depends on your pull-up resistor.
     GPIO_BOP(GPIOB) = (1U << 15);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 
@@ -194,15 +195,16 @@ __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     // 1. Drive Low
     GPIO_BC(GPIOB) = (1U << 14);
 
-    // 2. Hold Low (~33ns)
-    DelayQuarterCycle();
-    DelayQuarterCycle();
+    // 2. Hold Low 
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOB) = (1U << 14);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
-
 
 __attribute__((always_inline)) static inline void StrobeTriac(void) {
     // 1. Drive Low
@@ -213,6 +215,8 @@ __attribute__((always_inline)) static inline void StrobeTriac(void) {
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOB) = (1U << 3);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 
@@ -225,6 +229,8 @@ __attribute__((always_inline)) static inline void StrobeSol1(void) {
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOC) = (1U << 4);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol2(void) {
@@ -236,6 +242,8 @@ __attribute__((always_inline)) static inline void StrobeSol2(void) {
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOC) = (1U << 5);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol3(void) {
@@ -247,6 +255,8 @@ __attribute__((always_inline)) static inline void StrobeSol3(void) {
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOC) = (1U << 6);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol4(void) {
@@ -258,6 +268,8 @@ __attribute__((always_inline)) static inline void StrobeSol4(void) {
 
     // 3. Release High (LATCH triggers here)
     GPIO_BOP(GPIOC) = (1U << 7);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 __attribute__((always_inline)) static inline bool FIRQTriggered(void) {

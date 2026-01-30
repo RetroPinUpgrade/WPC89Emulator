@@ -50,7 +50,7 @@ void MCUPortInit(void) {
 
   // Push-Pull Outputs: RW (PB2), DREN (PB4), RESET (PB5), DISEN (PB13)
   // Initial=1
-  uint32_t pb_pp_pins = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_13;
+  uint32_t pb_pp_pins = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_13 | GPIO_PIN_15;
   gpio_bit_set(GPIOB, pb_pp_pins);
   gpio_output_options_set(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pb_pp_pins);
   gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_pp_pins);
@@ -59,7 +59,7 @@ void MCUPortInit(void) {
   // DIS1 (PB8), DIS2 (PB9), DIS3 (PB10), DIS4 (PB11)
   // Initial=1
   uint32_t pb_od_pins = GPIO_PIN_3 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | 
-                        GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
+                        GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_14;
   gpio_bit_set(GPIOB, pb_od_pins);
   gpio_output_options_set(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pb_od_pins);
   gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_od_pins);
@@ -520,8 +520,10 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t addres
 byte MPUHardwareRead(unsigned int offset) {
 
   if (offset>=0x3800 && offset<=0x3A00) {
+//    return ReadDisplay(offset);
     return DisplayLowPageStartAddress[offset-0x3800];
   } else if (offset>=0x3A00 && offset<=0x3C00) {
+//    return ReadDisplay(offset);
     return DisplayHighPageStartAddress[offset-0x3A00];
   } else if (offset==WPC_DMD_LOW_PAGE) {
     if (!DisplayUseShadowVariables) {

@@ -217,7 +217,7 @@ int main(void) {
             // Advance our "last run" marker by the amount we just executed
             lastTickCount += ticksExecuted;
 
-            if ((currentTickCount/1000000) & 0x01) GPIO_BC(GPIOE) = (1U << 14);
+            if ((currentTickCount/100000) & 0x01) GPIO_BC(GPIOE) = (1U << 14);
             else GPIO_BOP(GPIOE) = (1U << 14);
 
 #ifdef FAKE_DISPLAY_FIRQ

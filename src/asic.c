@@ -316,21 +316,20 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             SetDataBus(value);
             SetDRLine(false);
             DelayQuarterCycle();
-            DelayQuarterCycle();
             StrobeLampRow();
-            StrobeLampRow();
-            DelayQuarterCycle();
             SetDRLine(true);
             break;
         }
 
         case WPC_LAMP_COL_STROBE:
             SetDataBus(value);
+            DelayQuarterCycle();
+            DelayQuarterCycle();
             SetDRLine(false);
             DelayQuarterCycle();
             DelayQuarterCycle();
             StrobeLampCol();
-            StrobeLampCol();
+            DelayQuarterCycle();
             DelayQuarterCycle();
             SetDRLine(true);
             break;
