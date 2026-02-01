@@ -8,9 +8,13 @@
 
 #define ROM_BANK_SIZE                   16384
 #define SERIALIZED_STATE_VERSION        5
-#define RAM_SIZE                        0x4000
+#define RAM_SIZE                        0x4000 // this should be 0x2000 if everything is bounded correctly
 #define ROM_SIZE                        1048576
-#define RAM1_UPPER_ADDRESS              0x3000                
+#define RAM1_UPPER_ADDRESS              0x3000
+#define DISPLAY_RAM_LOWER_PAGE_START    0x3800
+#define DISPLAY_RAM_LOWER_PAGE_END      0x39FF
+#define DISPLAY_RAM_UPPER_PAGE_START    0x3A00
+#define DISPLAY_RAM_UPPER_PAGE_END      0x3BFF
 #define RAM2_LOWER_ADDRESS              0x3C00
 #define RAM2_UPPER_ADDRESS              0x3FAF
 #define HARDWARE_UPPER_ADDRESS          0x3FFF
@@ -53,6 +57,8 @@ void MPUWrite8(unsigned short offset, byte value);
 byte MPUBankswitchedRead(unsigned int offset);
 void MPUHardwareWrite(unsigned int offset, byte value);
 byte MPUHardwareRead(unsigned int offset);
+uint8_t *MPUGetNVRAMStart();
+uint16_t MPUGetNVRAMSize();
 
 void MPUFIRQ();
 void MPUIRQ();
@@ -174,7 +180,7 @@ __attribute__((always_inline)) static inline void SetBlanking(bool high) {
 }
 
 
-
+// This timing was tested with a reproduction Power Driver board
 __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     // 1. Drive Low (Prepare for edge)
     GPIO_BC(GPIOB) = (1U << 15);
@@ -190,7 +196,7 @@ __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     DelayQuarterCycle();
 }
 
-
+// This timing was tested with a reproduction Power Driver board
 __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     // 1. Drive Low
     GPIO_BC(GPIOB) = (1U << 14);

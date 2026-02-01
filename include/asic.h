@@ -21,6 +21,7 @@
 #define CALL_ZEROCLEAR_AFTER_TICKS      2000
 
 // Memory Map Offsets
+#define ASIC_RAM_BASE_ADDRESS            0x3FD4
 #define WPC_FLIPTRONICS_FLIPPER_PORT_A   0x3FD4
 #define WPC_SOLENOID_GEN_OUTPUT          0x3FE0
 #define WPC_SOLENOID_HIGHPOWER_OUTPUT    0x3FE1
@@ -57,15 +58,24 @@
 #define WPC_RAM_LOCK                     0x3FFD
 #define WPC_RAM_LOCKSIZE                 0x3FFE
 #define WPC_ZEROCROSS_IRQ_CLEAR          0x3FFF
+#define ASIC_RAM_SIZE                    (0x4000 - ASIC_RAM_BASE_ADDRESS)
+
+#define WPC_ZC_BLANK_RESET     0x02
+#define WPC_ZC_WATCHDOG_RESET  0x04
+#define WPC_ZC_IRQ_ENABLE      0x10
+#define WPC_ZC_IRQ_CLEAR       0x80
+#define WPC_FIRQ_CLEAR_BIT     0x80
+
+
 
 void ASICInit();
 void ASICRelease();
 void ASICReset();
-int ASICGetWDExpired();
 
-uint8_t ASICGetRomBank();
+int ASICGetWDExpired();
 bool ASICGetWDReset();
 void ASICClearWDReset();
+
 void ASICSetZeroCrossFlag();
 void ASICSetCabinetInput(uint8_t value);
 void ASICSetSwitchInput(int switchNr, int optionalValue);
@@ -74,9 +84,15 @@ void ASICFirqSourceDmd(bool fromDmd);
 void ASICToggleMidnightMadnessMode();
 void ASICSetDipSwitchByte(uint8_t dipSwitch);
 uint8_t ASICGetDipSwitchByte();
+bool ASICIRQTimerEnabled();
+void ASICSetCurrentTimeDate(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hours, uint8_t minutes);
+uint16_t ASICGetDateTimeMemoryOffset();
+void ASICSetDateTimeMemoryPointer(uint8_t *dataTimeBase);
+bool ASICGetBlanking();
 
 void ASICExecuteCycle(int ticksExecuted);
 bool ASICIsMemoryProtectionEnabled();
+uint8_t ASICGetRomBank();
     
 void ASICWrite(uint16_t offset, uint8_t value);
 uint8_t ASICRead(uint16_t offset);

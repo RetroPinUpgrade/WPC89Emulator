@@ -20,20 +20,13 @@
 #define NVRAM_CLOCK_IS_VALID       0x1806
 #define NVRAM_CLOCK_CHECKSUM_TIME  0x1807
 #define NVRAM_CLOCK_CHECKSUM_DATE  0x1808
-
-#define WPC_ZC_BLANK_RESET     0x02
-#define WPC_ZC_WATCHDOG_RESET  0x04
-#define WPC_ZC_IRQ_ENABLE      0x10
-#define WPC_ZC_IRQ_CLEAR       0x80
-#define WPC_FIRQ_CLEAR_BIT     0x80
-
     
 uint8_t ASICRomBank;
 bool ASICWDReset;
 bool ASICPeriodicIRQTimerEnabled;
 
 uint8_t ASICPageMask;
-uint8_t ASICRam[0x4000];
+uint8_t ASICRam[ASIC_RAM_SIZE];
 bool ASICHardwareHasSecurityPic;
     
 int ASICDiagnosticLedToggleCount;
@@ -51,6 +44,9 @@ int ASICWatchdogTicks;
 int ASICWatchdogExpiredCounter;
 uint8_t ASICDipSwitchSetting;
 uint8_t ASICCabinetSwitches;
+uint8_t *ASICDateTimeBase;
+uint8_t ASICHours;
+uint8_t ASICMinutes;
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
 tm ASICGetTime();
@@ -142,18 +138,21 @@ __attribute__((always_inline)) static inline uint8_t xformRow(uint8_t x) {
 
 void ASICInit() {
     ASICPageMask = 0x1F;
+    ASICHours = 0;
+    ASICMinutes = 0;
     
     // Default DipSwitch Setting (USA)
     ASICDipSwitchSetting = 0x00;
     ASICWDReset = false;
     ASICHardwareHasSecurityPic = false; // This value should be read from config or INI
+    ASICDateTimeBase = NULL;
 }
 
 void ASICRelease() {
 }
 
 void ASICReset() {
-    ASICPeriodicIRQTimerEnabled = true;
+    ASICPeriodicIRQTimerEnabled = false;
     ASICRomBank = 0;
     ASICDiagnosticLedToggleCount = 0;
     ASICOldDiagnostigLedState = 0;
@@ -245,7 +244,7 @@ void ASICExecuteCycle(int ticksExecuted) {
 }
 
 bool ASICIsMemoryProtectionEnabled() {
-    return ASICRam[WPC_RAM_LOCK] == WPC_PROTECTED_MEMORY_UNLOCK_VALUE;
+    return ASICRam[WPC_RAM_LOCK-ASIC_RAM_BASE_ADDRESS] == WPC_PROTECTED_MEMORY_UNLOCK_VALUE;
 }
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
@@ -258,13 +257,12 @@ tm ASICGetTime() {
 
 
 void ASICWrite(uint16_t offset, uint8_t value) {
-    ASICRam[offset] = value;
+    uint16_t asicRAMOffset = offset - ASIC_RAM_BASE_ADDRESS;
+    ASICRam[asicRAMOffset] = value;
 
     switch (offset) {
         case WPC_RAM_LOCK:
         case WPC_RAM_BANK:
-        case WPC_CLK_HOURS_DAYS:
-        case WPC_CLK_MINS:
         case WPC_SHIFTADDRH:
         case WPC_SHIFTADDRL:
         case WPC_SHIFTBIT:
@@ -273,6 +271,15 @@ void ASICWrite(uint16_t offset, uint8_t value) {
         case WPC_EXTBOARD1:
         case WPC_EXTBOARD2:
         case WPC_EXTBOARD3:
+            break;
+
+        case WPC_CLK_HOURS_DAYS:
+            ASICHours = value;
+            // This should update the RTC
+            break;
+        case WPC_CLK_MINS:
+            ASICMinutes = value;
+            // This should update the RTC
             break;
 
         case WPC95_FLIPPER_COIL_OUTPUT:
@@ -334,7 +341,7 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             SetDRLine(true);
             break;
 
-        case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:            
+        case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:    
             ASIC_firqSourceDmd = false;
             break;
 
@@ -387,21 +394,21 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             }
 
             if (ASICBlankSignalHigh && (value & WPC_ZC_BLANK_RESET)) {
-                ASICBlankSignalHigh = false;
-                SetBlanking(ASICBlankSignalHigh);
+                if (ASICPeriodicIRQTimerEnabled) {
+                    ASICBlankSignalHigh = false;
+                    SetBlanking(ASICBlankSignalHigh);
+                }
             }
 
             if (value & WPC_ZC_IRQ_CLEAR) {
                 ASICIrqCountGI++;
             }
 
-            bool timerEnabled = (value & WPC_ZC_IRQ_ENABLE)?true:false;
-            if (timerEnabled != ASICPeriodicIRQTimerEnabled) {
-                ASICPeriodicIRQTimerEnabled = timerEnabled;
+            if (value & WPC_ZC_IRQ_ENABLE) {
                 ASICPeriodicIRQTimerEnabled = true;
 #ifdef MPU89_BUILD_FOR_COMPUTER  
                 mvprintw(0, 80, "ASIC IRQ flags = %d", value);
-#endif                
+#endif          
             }
             break;
         }
@@ -412,6 +419,7 @@ void ASICWrite(uint16_t offset, uint8_t value) {
 }
 
 uint8_t ASICRead(uint16_t offset) {
+    uint16_t asicRAMOffset = offset - ASIC_RAM_BASE_ADDRESS;
     uint8_t temp = 0;
     
     switch (offset) {
@@ -421,7 +429,7 @@ uint8_t ASICRead(uint16_t offset) {
         case WPC_EXTBOARD1:
         case WPC_EXTBOARD2:
         case WPC_EXTBOARD3:
-            return ASICRam[offset];
+            return ASICRam[asicRAMOffset];
 
         case WPC95_FLIPPER_COIL_OUTPUT:
         case WPC95_FLIPPER_SWITCH_INPUT:
@@ -432,7 +440,7 @@ uint8_t ASICRead(uint16_t offset) {
 
         case WPC_RAM_LOCK:
         case WPC_RAM_LOCKSIZE:
-            return ASICRam[offset];
+            return ASICRam[asicRAMOffset];
 
         case WPC_SWITCH_CABINET_INPUT: {
             SetDirectSwitchRowLine(false); // turn on U15
@@ -446,7 +454,7 @@ uint8_t ASICRead(uint16_t offset) {
         }
 
         case WPC_ROM_BANK:
-            return ASICRam[offset] & ASICPageMask;
+            return ASICRam[asicRAMOffset] & ASICPageMask;
 
         case WPC_SWITCH_ROW_SELECT:
             if (ASICHardwareHasSecurityPic) {
@@ -463,63 +471,25 @@ uint8_t ASICRead(uint16_t offset) {
             break;
 
         case WPC_SHIFTADDRH:
-            temp = (ASICRam[WPC_SHIFTADDRH] +
-                    ((ASICRam[WPC_SHIFTADDRL] + (ASICRam[WPC_SHIFTBIT] >> 3)) >> 8)
+            temp = (ASICRam[WPC_SHIFTADDRH-ASIC_RAM_BASE_ADDRESS] +
+                    ((ASICRam[WPC_SHIFTADDRL-ASIC_RAM_BASE_ADDRESS] + (ASICRam[WPC_SHIFTBIT-ASIC_RAM_BASE_ADDRESS] >> 3)) >> 8)
                    ) & 0xFF;
             return temp;
             
         case WPC_SHIFTADDRL:
-            temp = (ASICRam[WPC_SHIFTADDRL] + (ASICRam[WPC_SHIFTBIT] >> 3)) & 0xFF;
+            temp = (ASICRam[WPC_SHIFTADDRL-ASIC_RAM_BASE_ADDRESS] + (ASICRam[WPC_SHIFTBIT-ASIC_RAM_BASE_ADDRESS] >> 3)) & 0xFF;
             return temp;
             
         case WPC_SHIFTBIT:
         case WPC_SHIFTBIT2:
-            return 1 << (ASICRam[offset] & 0x07);
+            return 1 << (ASICRam[asicRAMOffset] & 0x07);
 
         case WPC_CLK_HOURS_DAYS: {
-#ifdef MPU89_BUILD_FOR_COMPUTER              
-            tm t = ASICGetTime();
-            uint16_t checksum = 0;
-            
-            int year = t.tm_year + 1900;
-            ASICRam[NVRAM_CLOCK_YEAR_HI] = year >> 8;
-            checksum += ASICRam[NVRAM_CLOCK_YEAR_HI];
-            
-            ASICRam[NVRAM_CLOCK_YEAR_LO] = year & 0xFF;
-            checksum += ASICRam[NVRAM_CLOCK_YEAR_LO];
-            
-            ASICRam[NVRAM_CLOCK_MONTH] = t.tm_mon + 1;
-            checksum += ASICRam[NVRAM_CLOCK_MONTH];
-            
-            ASICRam[NVRAM_CLOCK_DAY_OF_MONTH] = t.tm_mday;
-            checksum += ASICRam[NVRAM_CLOCK_DAY_OF_MONTH];
-            
-            ASICRam[NVRAM_CLOCK_DAY_OF_WEEK] = t.tm_wday + 1;
-            checksum += ASICRam[NVRAM_CLOCK_DAY_OF_WEEK];
-            
-            ASICRam[NVRAM_CLOCK_HOUR] = 0;
-            checksum += ASICRam[NVRAM_CLOCK_HOUR];
-            
-            ASICRam[NVRAM_CLOCK_IS_VALID] = 1;
-            checksum += ASICRam[NVRAM_CLOCK_IS_VALID];
-            
-            checksum = 0xFFFF - checksum;
-            ASICRam[NVRAM_CLOCK_CHECKSUM_TIME] = checksum >> 8;
-            ASICRam[NVRAM_CLOCK_CHECKSUM_DATE] = checksum & 0xFF;
-            
-            return t.tm_hour;
-#else
-            return 0;
-#endif            
+            return ASICHours;
         }
 
         case WPC_CLK_MINS: {
-#ifdef MPU89_BUILD_FOR_COMPUTER  
-            tm t = ASICGetTime();
-            return t.tm_min;
-#else
-            return 0;
-#endif            
+            return ASICMinutes;
         }
 
         case WPC_SW_JUMPER_INPUT: {
@@ -537,7 +507,7 @@ uint8_t ASICRead(uint16_t offset) {
             if (ASICZeroCrossFlag) {
                 ASICIrqCountGI = 0;
             }
-            temp = (ASICZeroCrossFlag << 7) | (ASICRam[offset] & 0x7F);
+            temp = (ASICZeroCrossFlag << 7) | (ASICRam[asicRAMOffset] & 0x7F);
             ASICZeroCrossFlag = 0;
             return temp;
 
@@ -546,10 +516,50 @@ uint8_t ASICRead(uint16_t offset) {
 
         default:
 //            DEBUG_LOG("R_NOT_IMPLEMENTED 0x%X", offset);
-            return ASICRam[offset];
+            return ASICRam[asicRAMOffset];
     }
 }
 
 int ASICGetWDExpired() {
     return ASICWatchdogExpiredCounter;
+}
+
+
+bool ASICIRQTimerEnabled() {
+    return ASICPeriodicIRQTimerEnabled;
+}
+
+
+void ASICSetCurrentTimeDate(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hours, uint8_t minutes) {
+    if (ASICDateTimeBase==NULL) return;
+
+    // These registers are stored in the MPU's main memory
+    ASICDateTimeBase[NVRAM_CLOCK_YEAR_HI - NVRAM_CLOCK_YEAR_HI] = year>>8;
+    ASICDateTimeBase[NVRAM_CLOCK_YEAR_LO - NVRAM_CLOCK_YEAR_HI] = year & 0xFF;
+    ASICDateTimeBase[NVRAM_CLOCK_MONTH - NVRAM_CLOCK_YEAR_HI] = month;
+    ASICDateTimeBase[NVRAM_CLOCK_DAY_OF_MONTH - NVRAM_CLOCK_YEAR_HI] = day;
+    ASICDateTimeBase[NVRAM_CLOCK_DAY_OF_WEEK - NVRAM_CLOCK_YEAR_HI] = DOW;
+    ASICDateTimeBase[NVRAM_CLOCK_HOUR - NVRAM_CLOCK_YEAR_HI] = 0;
+    ASICDateTimeBase[NVRAM_CLOCK_IS_VALID - NVRAM_CLOCK_YEAR_HI] = 1;
+
+    uint16_t checksum = 0;
+    for (byte count=0; count<6; count++) checksum += (uint16_t)ASICDateTimeBase[count];
+    ASICDateTimeBase[NVRAM_CLOCK_CHECKSUM_TIME - NVRAM_CLOCK_YEAR_HI] = checksum >> 8;
+    ASICDateTimeBase[NVRAM_CLOCK_CHECKSUM_DATE - NVRAM_CLOCK_YEAR_HI] = checksum & 0xFF;
+
+    ASICMinutes = minutes;
+    ASICHours = hours;
+}
+
+
+uint16_t ASICGetDateTimeMemoryOffset() {
+    return NVRAM_CLOCK_YEAR_HI;
+}
+
+void ASICSetDateTimeMemoryPointer(uint8_t *dataTimeBase) {
+    ASICDateTimeBase = dataTimeBase;
+}
+
+bool ASICGetBlanking() {
+    return ASICBlankSignalHigh;
 }
