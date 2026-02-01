@@ -118,6 +118,14 @@ void BackupDomainInit(void) {
     rcu_periph_clock_enable(RCU_BKPSRAM);
     pmu_backup_write_enable();
 
+    // 1. Enable the Backup SRAM low-power regulator
+    // This connects the 4KB SRAM array to the backup power domain (VBAT)
+    pmu_backup_ldo_config(PMU_BLDOON_ON);
+
+    // 2. Wait for the Backup LDO Ready Flag to be stable
+    // This ensures the regulator is actually providing power before we trust the RAM
+    while (SET != pmu_flag_get(PMU_FLAG_BLDORF));
+
     // Check if RTC has been configured before (using backup register as flag)
     if (RTC_BKP1 != 0x32F2) {
         // FIRST TIME ONLY - configure oscillator and RTC
@@ -143,9 +151,40 @@ void BackupDomainInit(void) {
 }
 
 
+
+void BackupDomainInit1(void) {
+    rcu_periph_clock_enable(RCU_PMU);
+    rcu_periph_clock_enable(RCU_BKPSRAM);
+    pmu_backup_write_enable();
+
+
+    // Check if RTC has been configured before
+    if (RTC_BKP1 != 0x32F2) {
+        rcu_osci_on(RCU_LXTAL); 
+        if (ERROR == rcu_osci_stab_wait(RCU_LXTAL)) return;
+        
+        rcu_rtc_clock_config(RCU_RTCSRC_LXTAL);
+        rcu_periph_clock_enable(RCU_RTC);
+        
+        RTC_BKP1 = 0x32F2;
+    } else {
+        rcu_periph_clock_enable(RCU_RTC);
+    }
+    
+    rtc_register_sync_wait();
+
+    // LVD and EXTI setup...
+    pmu_lvd_select(PMU_LVDT_7);
+    exti_init(EXTI_16, EXTI_INTERRUPT, EXTI_TRIG_BOTH);
+    exti_interrupt_flag_clear(EXTI_16);
+    nvic_irq_enable(LVD_IRQn, 0, 0);
+}
+
+
 // Define pointer to backup SRAM
 #define BACKUP_SRAM_BASE    0x40024000
 #define BACKUP_SRAM_SIZE    0x1000  // 4KB
+#define BACKUP_SRAM_PROOF_VALUE     0xBC03  // stored in RTC_BKP0
 
 // This handler is called when the power drops below 2.6 (?) V
 // so we can remember anything important before the next run
@@ -158,7 +197,7 @@ void LVD_IRQHandler(void) {
         memcpy(backupRam, ramPtr, size);        
 
         /* YOUR POWER-CUT LOGIC HERE */
-        RTC_BKP0 = 0xBC02;  // Direct write
+        RTC_BKP0 = BACKUP_SRAM_PROOF_VALUE;  // Direct write
 
         // Clear flag to allow for next trigger
         exti_interrupt_flag_clear(EXTI_16);
@@ -167,7 +206,7 @@ void LVD_IRQHandler(void) {
 
 void RestoreMPURAM() {
     // Check the register to see if RAM has been backed up
-    if (RTC_BKP0==0xBC02) {
+    if (RTC_BKP0==BACKUP_SRAM_PROOF_VALUE) {
         // Put the RAM back
         uint8_t *ramPtr = MPUGetNVRAMStart();
         uint16_t size = MPUGetNVRAMSize();
@@ -241,7 +280,7 @@ int main(void) {
     uint32_t lastTimeRAMBackedUp = 0;
 
     while (1) {        
-        uint32_t currentTickCount = TwoMHzTicksSinceStart(); /*
+        uint32_t currentTickCount = TwoMHzTicksSinceStart(); 
         if (ASICGetBlanking()) {
             // run faster if we're still in blanking
             if (currentTickCount==lastTickCount) currentTickCount = lastTickCount + 1;
@@ -253,7 +292,7 @@ int main(void) {
                 BackupRAM();
             }
         }
-*/
+
         // Calculate how many 2MHz ticks have passed since we last checked
         int32_t ticksToRun = (int32_t)(currentTickCount - lastTickCount);
 
