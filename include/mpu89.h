@@ -28,6 +28,9 @@
 #define WPC_DMD_LOW_PAGE                0x3FBE
 #define WPC_DMD_ACTIVE_PAGE             0x3FBF
 
+#define WPCS_DATA                       0x3FDC
+#define WPCS_CONTROL_STATUS             0x3FDD
+
 /*
 WPCS_DATA 0x3FDC
 R/W: Send/receive a byte of data to/from the sound board.

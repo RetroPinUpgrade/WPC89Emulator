@@ -1,4 +1,5 @@
 #include "mpu89.h"
+#include "HPSoundCard.h"
 // Williams part number A-12742-xx
 
 bool DisplayUseShadowVariables = false;
@@ -125,6 +126,8 @@ bool MPUInit() {
   while(words--) *p++ = 0;
 
   MCUPortInit();
+  HPSoundCardInitConnection();
+  HPSoundCardTrackPlayPoly(217);
   SetDataBusDirection(true);
   ticksIrq = 0;
   protectedMemoryWriteAttempts = 0;
@@ -195,6 +198,8 @@ unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSte
     ticksExecuted += singleTicks;
     ticksIrq += singleTicks;
 
+    // This is the periodic interrupt for the ISR that reads switches
+    // and outputs lamps
     if (ticksIrq>=2048) {
       ticksIrq = 0;
       CPUIRQ();
@@ -219,8 +224,9 @@ byte MPURead8(unsigned short offset) {
     }
   }
   SetAddressBus(offset);
-  if (offset<RAM1_UPPER_ADDRESS) {
+  if (offset<RAM1_UPPER_ADDRESS) { // Anything less than 0x3000 (technically 0x2000-0x2FFF is no man's land
 
+    /*
     if (offset>=0x1800 && offset<=0x1808) {
       volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
       volatile uint8_t month = RAM[0x1802];
@@ -239,24 +245,18 @@ byte MPURead8(unsigned short offset) {
       (void)checksumTime;
       (void)checksumDate;
     }
+    */
 
     return RAM[offset];
-  }
-  if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) {
+  } else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) { // This can probably go?
     return RAM[offset];
-  }
-  if (offset<=HARDWARE_UPPER_ADDRESS) {
+  } else if (offset<=HARDWARE_UPPER_ADDRESS) { // Anything less than 0x3FFF
     return MPUHardwareRead(offset);
-  }
-  if (offset>=BANKED_ROM_LOWER_ADDRESS && offset<=BANKED_ROM_UPPER_ADDRESS) {
+  } else if (offset<=BANKED_ROM_UPPER_ADDRESS) { // Anything less than 0x8000
     return MPUBankswitchedRead(offset);
-  }
-  if (offset>=SYSTEM_ROM_LOWER_ADDRESS && offset<=SYSTEM_ROM_UPPER_ADDRESS) {
-    if (ROM) {
-      uint32_t adjustedAddress = (uint32_t)offset | UpperAddressMask;
-      return ROM[adjustedAddress];
-    }
-    return 0;
+  } else {
+    uint32_t adjustedAddress = (uint32_t)offset | UpperAddressMask;
+    return ROM[adjustedAddress];
   }
 
   return 0;
@@ -269,6 +269,7 @@ void MPUWrite8(unsigned short offset, byte value) {
   else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) RAM[offset] = value;
   else if (offset<=HARDWARE_UPPER_ADDRESS) MPUHardwareWrite(offset, value);
 
+/*  
   if (offset==0x1803) {
     volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
     volatile uint8_t month = RAM[0x1802];
@@ -290,6 +291,7 @@ void MPUWrite8(unsigned short offset, byte value) {
     (void)checksumTime;
     (void)checksumDate;
   }
+*/    
 
 
 }
@@ -359,6 +361,10 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   RAM[offset] = value;
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
+    if (offset==WPCS_DATA) {
+      HPSoundCardTrackPlayPoly(value);
+      return;
+    }
     ASICWrite(offset, value);
     return;
   }
@@ -563,8 +569,9 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t addres
 
 byte MPUHardwareRead(unsigned int offset) {
 
- if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
-     return ASICRead(offset);
+  if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
+    if (offset==WPCS_CONTROL_STATUS) return 0x80;
+    return ASICRead(offset);
   }
 
   if (offset>=DISPLAY_RAM_LOWER_PAGE_START && offset<=DISPLAY_RAM_LOWER_PAGE_END) {

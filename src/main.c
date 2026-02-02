@@ -1,5 +1,6 @@
 //#include <stdio.h>
 #include "mpu89.h"
+#include "HPSoundCard.h"
 #include "gd32f4xx.h"
 #include "string.h"
 
@@ -399,8 +400,9 @@ int main(void) {
     uint32_t lastTimeRAMBackedUp = 0;
     uint32_t lastTimeUpdate = 0;
 
-    while (1) {        
-        uint32_t currentTickCount = TwoMHzTicksSinceStart(); 
+    while (1) {
+        HPSoundCardUpdate();
+        uint32_t currentTickCount = TwoMHzTicksSinceStart();
         if (ASICGetBlanking()) {
             // run faster if we're still in blanking
             if (currentTickCount==lastTickCount) currentTickCount = lastTickCount + 1;
