@@ -220,7 +220,7 @@ byte MPURead8(unsigned short offset) {
   }
   SetAddressBus(offset);
   if (offset<RAM1_UPPER_ADDRESS) {
-/*    
+
     if (offset>=0x1800 && offset<=0x1808) {
       volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
       volatile uint8_t month = RAM[0x1802];
@@ -239,7 +239,7 @@ byte MPURead8(unsigned short offset) {
       (void)checksumTime;
       (void)checksumDate;
     }
-*/
+
     return RAM[offset];
   }
   if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) {
@@ -268,8 +268,8 @@ void MPUWrite8(unsigned short offset, byte value) {
   if (offset<=RAM1_UPPER_ADDRESS) RAM[offset] = value;
   else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) RAM[offset] = value;
   else if (offset<=HARDWARE_UPPER_ADDRESS) MPUHardwareWrite(offset, value);
-/*    
-  if (offset>=0x1800 && offset<=0x1808) {
+
+  if (offset==0x1803) {
     volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
     volatile uint8_t month = RAM[0x1802];
     volatile uint8_t day = RAM[0x1803];
@@ -278,6 +278,9 @@ void MPUWrite8(unsigned short offset, byte value) {
     volatile uint8_t valid = RAM[0x1806];
     volatile uint8_t checksumTime = RAM[0x1807];
     volatile uint8_t checksumDate = RAM[0x1808];
+    if (day!=9) {
+      RAM[0x3001] = hour;
+    }
     (void)year;
     (void)month;
     (void)day;
@@ -287,7 +290,7 @@ void MPUWrite8(unsigned short offset, byte value) {
     (void)checksumTime;
     (void)checksumDate;
   }
-*/
+
 
 }
 
@@ -355,10 +358,12 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   // write/mirror value to ram, so its visible using the memory monitor
   RAM[offset] = value;
   
-  if (offset==0x3FDC || offset==0x3FDD) {
-//    if (offset==0x3FDC) mvprintw(1, 20, "Snd Data: 0x%04X = 0x%02X\n", offset, value);
-//    else mvprintw(1, 40, "Snd Ctrl: 0x%04X = 0x%02X\n", offset, value);
-  } else if (offset>=DISPLAY_RAM_LOWER_PAGE_START && offset<=DISPLAY_RAM_LOWER_PAGE_END) {
+  if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
+    ASICWrite(offset, value);
+    return;
+  }
+
+  if (offset>=DISPLAY_RAM_LOWER_PAGE_START && offset<=DISPLAY_RAM_LOWER_PAGE_END) {
     // Trying to write to the low page of display
     DisplayLowPageStartAddress[offset-DISPLAY_RAM_LOWER_PAGE_START] = value;
     WriteDisplay(offset, value);
@@ -380,12 +385,10 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
     DisplayNextActivePage = value;
     if (DisplayNextActivePage>15) DisplayNextActivePage = 15;
     WriteDisplay(offset, value);
-  } else if (offset==WPC_DMD_SCANLINE || offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR) {
+  } else if (offset==WPC_DMD_SCANLINE /*|| offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR*/) {
     DisplayScanlineTrigger = value;
-    if (offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR) ASICFirqSourceDmd(false);
+    //if (offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR) ASICFirqSourceDmd(false);
     WriteDisplay(offset, value);
-  } else if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
-    ASICWrite(offset, value);
   }
 
 
@@ -560,6 +563,10 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t addres
 
 byte MPUHardwareRead(unsigned int offset) {
 
+ if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
+     return ASICRead(offset);
+  }
+
   if (offset>=DISPLAY_RAM_LOWER_PAGE_START && offset<=DISPLAY_RAM_LOWER_PAGE_END) {
     // For Display Readds we use shadow Display RAM
     // so we don't have to hit the bus
@@ -589,9 +596,7 @@ byte MPUHardwareRead(unsigned int offset) {
     }
     if (DisplayCurrentScanline & WPC_FIRQ_CLEAR_BIT) ASICFirqSourceDmd(true);
     return DisplayCurrentScanline;
-  } else if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
-     return ASICRead(offset);
-  }
+  } 
 
   return 0;
    

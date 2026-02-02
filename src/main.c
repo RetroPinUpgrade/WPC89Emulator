@@ -11,7 +11,40 @@ uint8_t* GetROMPointer(void);
 uint32_t GetROMSize(void);
 #endif
 
-extern void initialise_monitor_handles(void);
+//extern void initialise_monitor_handles(void);
+
+void SwitchTo240MHz(void) {
+    /* 1. Reset RCU to a known state */
+    rcu_deinit();
+    
+    /* 2. Enable HXTAL (External Crystal) */
+    rcu_osci_on(RCU_HXTAL);
+    if (ERROR == rcu_osci_stab_wait(RCU_HXTAL)) {
+        while(1); // Crystal failed
+    }
+
+    /* 3. Set Flash Wait States (WS) for 240MHz */
+    /* Note: Compiler suggested WS_WSCNT_15 */
+    fmc_wscnt_set(WS_WSCNT_15); 
+
+    /* 4. Configure PLL: 25MHz / 25 * 480 / 2 = 240MHz */
+    /* Parameters: Source, PSC, N, P, Q */
+    rcu_pll_config(RCU_PLLSRC_HXTAL, 25, 480, 2, 10);
+
+    /* 5. Enable PLL and wait */
+    rcu_osci_on(RCU_PLL_CK);
+    while (ERROR == rcu_osci_stab_wait(RCU_PLL_CK));
+
+    /* 6. Switch System Clock to PLLP */
+    /* Note: Compiler suggested RCU_CKSYSSRC_PLLP */
+    rcu_system_clock_source_config(RCU_CKSYSSRC_PLLP);
+    
+    /* 7. Wait for switch to complete (0x02 is PLLP status) */
+    while (RCU_SCSS_PLLP != rcu_system_clock_source_get());
+
+    /* 8. Update global SystemCoreClock variable */
+    SystemCoreClockUpdate();
+}
 
 // Define the target frequency
 #define TARGET_FREQ 2000000 // 2 MHz
@@ -110,7 +143,7 @@ void InitTimer0PWM(void) {
     timer_enable(TIMER0);
 }
 
-
+#define RTC_PROOF_VALUE     0x3207  // stored in RTC_BKP0
 // The backup domain is anything that needs to run on 
 // clock power or needs to be stored between power cycles
 void BackupDomainInit(void) {
@@ -127,20 +160,44 @@ void BackupDomainInit(void) {
     while (SET != pmu_flag_get(PMU_FLAG_BLDORF));
 
     // Check if RTC has been configured before (using backup register as flag)
-    if (RTC_BKP1 != 0x32F2) {
-        // FIRST TIME ONLY - configure oscillator and RTC
+    if (RTC_BKP1 != RTC_PROOF_VALUE) {
         rcu_osci_on(RCU_LXTAL); 
         if (ERROR == rcu_osci_stab_wait(RCU_LXTAL)) return;
         
-        rcu_rtc_clock_config(RCU_RTCSRC_LXTAL);  // This can reset RTC!
+        rcu_rtc_clock_config(RCU_RTCSRC_LXTAL);
         rcu_periph_clock_enable(RCU_RTC);
+
+        /* --- PRESCALER CONFIGURATION START --- */
+        rtc_parameter_struct rtc_init_para;
         
-        RTC_BKP1 = 0x32F2;  // Mark as configured
+        // 1Hz = 32768 / ((127+1) * (255+1))
+        rtc_init_para.factor_asyn = 0x7F; // 127
+        rtc_init_para.factor_syn  = 0xFF; // 255
+        
+        // You must provide initial values when calling rtc_init
+        rtc_init_para.year = 0x26; 
+        rtc_init_para.month = RTC_FEB;
+        rtc_init_para.date = 0x01;
+        rtc_init_para.day_of_week = RTC_SUNDAY;
+        rtc_init_para.hour = 0x22;
+        rtc_init_para.minute = 0x25;
+        rtc_init_para.second = 0x00;
+        rtc_init_para.display_format = RTC_24HOUR;
+        rtc_init_para.am_pm = RTC_AM;
+
+        // This function handles the INITM bit and WPK keys automatically
+        rtc_init(&rtc_init_para);
+        /* --- PRESCALER CONFIGURATION END --- */
+        
+        RTC_BKP1 = RTC_PROOF_VALUE;
     } else {
         // SUBSEQUENT RESETS - don't reconfigure, just enable
         rcu_periph_clock_enable(RCU_RTC);
+        // EXTREMELY IMPORTANT: Clear the sync flag manually before waiting.
+        // This forces the hardware to perform a fresh synchronization.
+        RTC_STAT &= ~RTC_STAT_RSYNF;
     }
-    
+
     rtc_register_sync_wait();
 
     // LVD setup (always do this part)
@@ -148,36 +205,7 @@ void BackupDomainInit(void) {
     exti_init(EXTI_16, EXTI_INTERRUPT, EXTI_TRIG_BOTH);
     exti_interrupt_flag_clear(EXTI_16);
     nvic_irq_enable(LVD_IRQn, 0, 0);
-}
-
-
-
-void BackupDomainInit1(void) {
-    rcu_periph_clock_enable(RCU_PMU);
-    rcu_periph_clock_enable(RCU_BKPSRAM);
-    pmu_backup_write_enable();
-
-
-    // Check if RTC has been configured before
-    if (RTC_BKP1 != 0x32F2) {
-        rcu_osci_on(RCU_LXTAL); 
-        if (ERROR == rcu_osci_stab_wait(RCU_LXTAL)) return;
-        
-        rcu_rtc_clock_config(RCU_RTCSRC_LXTAL);
-        rcu_periph_clock_enable(RCU_RTC);
-        
-        RTC_BKP1 = 0x32F2;
-    } else {
-        rcu_periph_clock_enable(RCU_RTC);
-    }
-    
-    rtc_register_sync_wait();
-
-    // LVD and EXTI setup...
-    pmu_lvd_select(PMU_LVDT_7);
-    exti_init(EXTI_16, EXTI_INTERRUPT, EXTI_TRIG_BOTH);
-    exti_interrupt_flag_clear(EXTI_16);
-    nvic_irq_enable(LVD_IRQn, 0, 0);
+    RTC_CTL |= (1U << 18); // Set BYPSHAD bit
 }
 
 
@@ -185,23 +213,11 @@ void BackupDomainInit1(void) {
 #define BACKUP_SRAM_BASE    0x40024000
 #define BACKUP_SRAM_SIZE    0x1000  // 4KB
 #define BACKUP_SRAM_PROOF_VALUE     0xBC03  // stored in RTC_BKP0
-
-// This handler is called when the power drops below 2.6 (?) V
-// so we can remember anything important before the next run
-// (this needs to be quick)
-void LVD_IRQHandler(void) {
-    if (SET == exti_interrupt_flag_get(EXTI_16)) {
-        uint8_t *ramPtr = MPUGetNVRAMStart();
-        uint16_t size = MPUGetNVRAMSize();
-        uint8_t *backupRam = (uint8_t *)BACKUP_SRAM_BASE;
-        memcpy(backupRam, ramPtr, size);        
-
-        /* YOUR POWER-CUT LOGIC HERE */
-        RTC_BKP0 = BACKUP_SRAM_PROOF_VALUE;  // Direct write
-
-        // Clear flag to allow for next trigger
-        exti_interrupt_flag_clear(EXTI_16);
-    }
+void BackupRAM() {
+    uint8_t *ramPtr = MPUGetNVRAMStart();
+    uint16_t size = MPUGetNVRAMSize();
+    uint8_t *backupRam = (uint8_t *)BACKUP_SRAM_BASE;
+    memcpy(backupRam, ramPtr, size);        
 }
 
 void RestoreMPURAM() {
@@ -215,10 +231,68 @@ void RestoreMPURAM() {
     }
 }
 
+// This handler is called when the power drops below 2.6 (?) V
+// so we can remember anything important before the next run
+// (this needs to be quick)
+void LVD_IRQHandler(void) {
+    if (SET == exti_interrupt_flag_get(EXTI_16)) {
+        BackupRAM(); // store settings, audits, and other permanent information
 
-void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) {
+        RTC_BKP0 = BACKUP_SRAM_PROOF_VALUE;  // Direct write
 
+        // Clear flag to allow for next trigger
+        exti_interrupt_flag_clear(EXTI_16);
+    }
+}
+
+#define DEC2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
+#define BCD2DEC(x) ((((x) >> 4) * 10) + ((x) & 0x0F))
+
+void SetDateTimeFromASIC() {
+    uint16_t year;
+    uint8_t month, day, dow, hour, minute;
+    ASICGetDateTime(&year, &month, &day, &dow, &hour, &minute);
     
+    rtc_parameter_struct rtc_time;
+
+    rtc_time.year   = DEC2BCD((uint8_t)(year % 100));
+    rtc_time.month  = DEC2BCD(month);
+    rtc_time.date   = DEC2BCD(day);
+    uint8_t rtcDOW = RTC_SUNDAY;
+    switch (dow) {
+        case 1: rtcDOW = RTC_SUNDAY;
+        case 2: rtcDOW = RTC_MONDAY;
+        case 3: rtcDOW = RTC_TUESDAY;
+        case 4: rtcDOW = RTC_WEDSDAY; // just had to guess at this spelling.
+        case 5: rtcDOW = RTC_THURSDAY;
+        case 6: rtcDOW = RTC_FRIDAY;
+        case 7: rtcDOW = RTC_SATURDAY;
+    }
+    rtc_time.day_of_week = rtcDOW; // Ensure this is 1-7
+    rtc_time.hour   = DEC2BCD(hour);
+    rtc_time.minute = DEC2BCD(minute);
+    rtc_time.second = 0;
+    
+    rtc_time.display_format = RTC_24HOUR;
+    rtc_time.am_pm = RTC_AM;
+
+    // 2. MUST include the prescalers so they aren't overwritten with junk
+    rtc_time.factor_asyn = 0x7F; // 127
+    rtc_time.factor_syn  = 0xFF; // 255
+
+    // 3. Proper RTC write sequence
+    pmu_backup_write_enable();
+    
+    // Note: rtc_init() calls rtc_init_mode_enter() and exit() internally.
+    // Calling them again is redundant but harmless.
+    rtc_init(&rtc_time); 
+    
+    // Ensure sync is maintained after a write
+    rtc_register_sync_wait();
+}
+
+
+void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) {    
     // Decode TIME register (BCD format)
     // RTC_TIME bits: [22:20]=hour tens, [19:16]=hour ones, [14:12]=min tens, [11:8]=min ones, [6:4]=sec tens, [3:0]=sec ones
     uint8_t hours   = ((rtc_time_reg >> 20) & 0x3) * 10 + ((rtc_time_reg >> 16) & 0xF);
@@ -228,22 +302,19 @@ void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) 
     // Decode DATE register (BCD format)
     // RTC_DATE bits: [23:20]=year tens, [19:16]=year ones, [15:13]=DOW, [12]=month tens, [11:8]=month ones, [5:4]=day tens, [3:0]=day ones
     uint16_t year  = 2000 + ((rtc_date_reg >> 20) & 0xF) * 10 + ((rtc_date_reg >> 16) & 0xF);
-    uint8_t dow   = 1 + ((rtc_date_reg >> 13) & 0x7);
+    uint8_t dow   = ((rtc_date_reg >> 13) & 0x7) +1;
+    if (dow==8) dow = 1;
     uint8_t month = ((rtc_date_reg >> 12) & 0x1) * 10 + ((rtc_date_reg >> 8) & 0xF);
     uint8_t day   = ((rtc_date_reg >> 4) & 0x3) * 10 + (rtc_date_reg & 0xF);
-    ASICSetCurrentTimeDate(year, month, day, dow, hours, minutes);
+    ASICSetCurrentDateTime(year, month, day, dow, hours, minutes);
 }
 
 
-void BackupRAM() {
-    uint8_t *ramPtr = MPUGetNVRAMStart();
-    uint16_t size = MPUGetNVRAMSize();
-    uint8_t *backupRam = (uint8_t *)BACKUP_SRAM_BASE;
-    memcpy(backupRam, ramPtr, size);        
-}
+
 
 
 int main(void) {
+    SwitchTo240MHz();
     // Right after reset, before doing anything else, read
     // some real-time clock values
     volatile uint32_t rtc_time_reg = RTC_TIME;
@@ -266,6 +337,8 @@ int main(void) {
     CPUSetCallbacks(MPUWrite8, MPURead8);
     MPUReset();
 
+    rtc_time_reg = RTC_TIME;
+    rtc_date_reg = RTC_DATE;
     SetASICFromDateTimeRegisters(rtc_date_reg, rtc_time_reg);
 
     GPIO_BOP(GPIOC) = (1U << 0);
@@ -275,21 +348,35 @@ int main(void) {
     uint32_t lastTickCount = TwoMHzTicksSinceStart();
 
     bool FIRQHasBeenTriggered = false;
-    bool RAMHasBeenBackedUp = false;
+//    bool RAMHasBeenBackedUp = false;
     uint32_t FIRQTriggeredTicks = 0;
-    uint32_t lastTimeRAMBackedUp = 0;
+//    uint32_t lastTimeRAMBackedUp = 0;
+    uint32_t lastTimeUpdate = 0;
 
     while (1) {        
         uint32_t currentTickCount = TwoMHzTicksSinceStart(); 
         if (ASICGetBlanking()) {
             // run faster if we're still in blanking
             if (currentTickCount==lastTickCount) currentTickCount = lastTickCount + 1;
-        } else {
+        }/* else {
+            // save settings every 30 seconds
             if (currentTickCount>(lastTimeRAMBackedUp+60000000)) RAMHasBeenBackedUp = false;
             if (!RAMHasBeenBackedUp) {
                 RAMHasBeenBackedUp = true;
                 lastTimeRAMBackedUp = currentTickCount;
                 BackupRAM();
+            }
+        }*/
+
+        // Twice a minute (roughly) update the date & time on ASIC
+        if ( (currentTickCount/8000000)!=lastTimeUpdate ) {
+            lastTimeUpdate = (currentTickCount/8000000);
+            if (ASICDateTimeChanged()) {
+//                SetDateTimeFromASIC();
+            } else {
+                rtc_time_reg = RTC_TIME;
+                rtc_date_reg = RTC_DATE;
+                SetASICFromDateTimeRegisters(rtc_date_reg, rtc_time_reg);
             }
         }
 

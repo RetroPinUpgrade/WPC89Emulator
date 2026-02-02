@@ -45,8 +45,18 @@ int ASICWatchdogExpiredCounter;
 uint8_t ASICDipSwitchSetting;
 uint8_t ASICCabinetSwitches;
 uint8_t *ASICDateTimeBase;
-uint8_t ASICHours;
-uint8_t ASICMinutes;
+
+uint8_t ASICYearHigh;
+uint8_t ASICYearLow;
+uint8_t ASICMonth;
+uint8_t ASICDay;
+uint8_t ASICDOW;
+uint8_t ASICHour;
+uint8_t ASICMinute;
+uint8_t ASICDateChecksum1;
+uint8_t ASICDateChecksum2;
+bool ASICDateTimeHasChanged;
+
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
 tm ASICGetTime();
@@ -138,14 +148,15 @@ __attribute__((always_inline)) static inline uint8_t xformRow(uint8_t x) {
 
 void ASICInit() {
     ASICPageMask = 0x1F;
-    ASICHours = 0;
-    ASICMinutes = 0;
+    ASICHour = 0;
+    ASICMinute = 0;
     
     // Default DipSwitch Setting (USA)
     ASICDipSwitchSetting = 0x00;
     ASICWDReset = false;
     ASICHardwareHasSecurityPic = false; // This value should be read from config or INI
     ASICDateTimeBase = NULL;
+    ASICDateTimeHasChanged = false;
 }
 
 void ASICRelease() {
@@ -274,12 +285,12 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             break;
 
         case WPC_CLK_HOURS_DAYS:
-            ASICHours = value;
-            // This should update the RTC
+            ASICHour = value;
+            ASICDateTimeHasChanged = true;
             break;
         case WPC_CLK_MINS:
-            ASICMinutes = value;
-            // This should update the RTC
+            ASICMinute = value;
+            ASICDateTimeHasChanged = true;
             break;
 
         case WPC95_FLIPPER_COIL_OUTPUT:
@@ -485,11 +496,24 @@ uint8_t ASICRead(uint16_t offset) {
             return 1 << (ASICRam[asicRAMOffset] & 0x07);
 
         case WPC_CLK_HOURS_DAYS: {
-            return ASICHours;
+            if (ASICDateTimeBase) {
+                // We're assuming that the memory structure is 
+                // as follows
+                ASICDateTimeBase[0] = ASICYearHigh;
+                ASICDateTimeBase[1] = ASICYearLow;
+                ASICDateTimeBase[2] = ASICMonth;
+                ASICDateTimeBase[3] = ASICDay;
+                ASICDateTimeBase[4] = ASICDOW;
+                ASICDateTimeBase[5] = 0; // Hour is 0
+                ASICDateTimeBase[6] = 1; // valid = 1
+                ASICDateTimeBase[7] = ASICDateChecksum1; // checksum high byte
+                ASICDateTimeBase[8] = ASICDateChecksum2; // checksum low byte
+            }
+            return ASICHour;
         }
 
         case WPC_CLK_MINS: {
-            return ASICMinutes;
+            return ASICMinute;
         }
 
         case WPC_SW_JUMPER_INPUT: {
@@ -530,25 +554,53 @@ bool ASICIRQTimerEnabled() {
 }
 
 
-void ASICSetCurrentTimeDate(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hours, uint8_t minutes) {
+void ASICSetCurrentDateTime(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hour, uint8_t minute) {
     if (ASICDateTimeBase==NULL) return;
-
+   
     // These registers are stored in the MPU's main memory
-    ASICDateTimeBase[NVRAM_CLOCK_YEAR_HI - NVRAM_CLOCK_YEAR_HI] = year>>8;
-    ASICDateTimeBase[NVRAM_CLOCK_YEAR_LO - NVRAM_CLOCK_YEAR_HI] = year & 0xFF;
-    ASICDateTimeBase[NVRAM_CLOCK_MONTH - NVRAM_CLOCK_YEAR_HI] = month;
-    ASICDateTimeBase[NVRAM_CLOCK_DAY_OF_MONTH - NVRAM_CLOCK_YEAR_HI] = day;
-    ASICDateTimeBase[NVRAM_CLOCK_DAY_OF_WEEK - NVRAM_CLOCK_YEAR_HI] = DOW;
-    ASICDateTimeBase[NVRAM_CLOCK_HOUR - NVRAM_CLOCK_YEAR_HI] = 0;
-    ASICDateTimeBase[NVRAM_CLOCK_IS_VALID - NVRAM_CLOCK_YEAR_HI] = 1;
+    ASICYearHigh = year>>8;
+    ASICYearLow = year & 0xFF;
+    ASICMonth = month;
+    ASICDay = day;
+    ASICDOW = DOW;
+    ASICHour = hour;
 
     uint16_t checksum = 0;
-    for (byte count=0; count<6; count++) checksum += (uint16_t)ASICDateTimeBase[count];
-    ASICDateTimeBase[NVRAM_CLOCK_CHECKSUM_TIME - NVRAM_CLOCK_YEAR_HI] = checksum >> 8;
-    ASICDateTimeBase[NVRAM_CLOCK_CHECKSUM_DATE - NVRAM_CLOCK_YEAR_HI] = checksum & 0xFF;
+    checksum = ASICYearHigh + ASICYearLow + ASICMonth + ASICDay + ASICDOW + 1;
+    checksum = 0xFFFF - checksum;
+    ASICDateChecksum1 = checksum >> 8;
+    ASICDateChecksum2 = checksum & 0xFF;
 
-    ASICMinutes = minutes;
-    ASICHours = hours;
+/*
+    uint16_t checksum = 65289;
+    ASICYearHigh = (2026)>>8;
+    ASICYearLow = (2026) & 0xFF;
+    ASICMonth = 2;
+    ASICDay = 1;
+    ASICDOW = 1;
+    ASICHour = hour;
+    ASICDateChecksum1 = checksum >> 8;
+    ASICDateChecksum2 = checksum & 0xFF;
+*/    
+
+    ASICMinute = minute;
+}
+
+void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow, uint8_t *hour, uint8_t *minute) {
+    *year = ASICYearHigh * 256 + ASICYearLow;
+    *month = ASICMonth;
+    *day = ASICDay;
+    *dow = ASICDOW;
+    *hour = ASICDOW;
+    *minute = ASICDOW;
+
+    ASICDateTimeHasChanged = false;    
+}
+
+
+
+bool ASICDateTimeChanged() {
+    return ASICDateTimeHasChanged;
 }
 
 

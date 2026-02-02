@@ -85,9 +85,12 @@ void ASICToggleMidnightMadnessMode();
 void ASICSetDipSwitchByte(uint8_t dipSwitch);
 uint8_t ASICGetDipSwitchByte();
 bool ASICIRQTimerEnabled();
-void ASICSetCurrentTimeDate(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hours, uint8_t minutes);
+void ASICSetCurrentDateTime(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hour, uint8_t minute);
+bool ASICDateTimeChanged();
 uint16_t ASICGetDateTimeMemoryOffset();
 void ASICSetDateTimeMemoryPointer(uint8_t *dataTimeBase);
+void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow, uint8_t *hour, uint8_t *minute);
+
 bool ASICGetBlanking();
 
 void ASICExecuteCycle(int ticksExecuted);
