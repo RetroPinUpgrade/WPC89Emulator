@@ -11,8 +11,6 @@ uint8_t* GetROMPointer(void);
 uint32_t GetROMSize(void);
 #endif
 
-//extern void initialise_monitor_handles(void);
-
 void SwitchTo240MHz(void) {
     /* 1. Reset RCU to a known state */
     rcu_deinit();
@@ -34,6 +32,53 @@ void SwitchTo240MHz(void) {
     /* 5. Enable PLL and wait */
     rcu_osci_on(RCU_PLL_CK);
     while (ERROR == rcu_osci_stab_wait(RCU_PLL_CK));
+
+    /* 5.5 Configure Bus Dividers for 240MHz Operation */
+    /* We write to the RCU_CFG0 register directly to bypass missing library functions. */
+    /* Clear AHB, APB1, and APB2 prescaler bits */
+    RCU_CFG0 &= ~(RCU_CFG0_AHBPSC | RCU_CFG0_APB1PSC | RCU_CFG0_APB2PSC);
+    /* Set AHB=DIV1 (240MHz), APB1=DIV4 (60MHz), APB2=DIV2 (120MHz) */
+    RCU_CFG0 |= (RCU_AHB_CKSYS_DIV1 | RCU_APB1_CKAHB_DIV4 | RCU_APB2_CKAHB_DIV2);
+
+    /* 6. Switch System Clock to PLLP */
+    /* Note: Compiler suggested RCU_CKSYSSRC_PLLP */
+    rcu_system_clock_source_config(RCU_CKSYSSRC_PLLP);
+    
+    /* 7. Wait for switch to complete (0x02 is PLLP status) */
+    while (RCU_SCSS_PLLP != rcu_system_clock_source_get());
+
+    /* 8. Update global SystemCoreClock variable */
+    SystemCoreClockUpdate();
+}
+
+void OldSwitchTo240MHz(void) {
+    /* 1. Reset RCU to a known state */
+    rcu_deinit();
+    
+    /* 2. Enable HXTAL (External Crystal) */
+    rcu_osci_on(RCU_HXTAL);
+    if (ERROR == rcu_osci_stab_wait(RCU_HXTAL)) {
+        while(1); // Crystal failed
+    }
+
+    /* 3. Set Flash Wait States (WS) for 240MHz */
+    /* Note: Compiler suggested WS_WSCNT_15 */
+    fmc_wscnt_set(WS_WSCNT_15); 
+
+    /* 4. Configure PLL: 25MHz / 25 * 480 / 2 = 240MHz */
+    /* Parameters: Source, PSC, N, P, Q */
+    rcu_pll_config(RCU_PLLSRC_HXTAL, 25, 480, 2, 10);
+
+    /* 5. Enable PLL and wait */
+    rcu_osci_on(RCU_PLL_CK);
+    while (ERROR == rcu_osci_stab_wait(RCU_PLL_CK));
+
+    /* 5.5 Configure Bus Dividers for 240MHz Operation */
+    /* We write to the RCU_CFG0 register directly to bypass missing library functions. */
+    /* Clear AHB, APB1, and APB2 prescaler bits */
+    RCU_CFG0 &= ~(RCU_CFG0_AHBPSC | RCU_CFG0_APB1PSC | RCU_CFG0_APB2PSC);
+    /* Set AHB=DIV1 (240MHz), APB1=DIV4 (60MHz), APB2=DIV2 (120MHz) */
+    RCU_CFG0 |= (RCU_AHB_CKSYS_DIV1 | RCU_APB1_CKAHB_DIV4 | RCU_APB2_CKAHB_DIV2);
 
     /* 6. Switch System Clock to PLLP */
     /* Note: Compiler suggested RCU_CKSYSSRC_PLLP */
@@ -143,7 +188,7 @@ void InitTimer0PWM(void) {
     timer_enable(TIMER0);
 }
 
-#define RTC_PROOF_VALUE     0x3207  // stored in RTC_BKP0
+#define RTC_PROOF_VALUE     0x3208  // stored in RTC_BKP0
 // The backup domain is anything that needs to run on 
 // clock power or needs to be stored between power cycles
 void BackupDomainInit(void) {
@@ -212,12 +257,13 @@ void BackupDomainInit(void) {
 // Define pointer to backup SRAM
 #define BACKUP_SRAM_BASE    0x40024000
 #define BACKUP_SRAM_SIZE    0x1000  // 4KB
-#define BACKUP_SRAM_PROOF_VALUE     0xBC03  // stored in RTC_BKP0
+#define BACKUP_SRAM_PROOF_VALUE     0xBC04  // stored in RTC_BKP0
 void BackupRAM() {
     uint8_t *ramPtr = MPUGetNVRAMStart();
     uint16_t size = MPUGetNVRAMSize();
     uint8_t *backupRam = (uint8_t *)BACKUP_SRAM_BASE;
     memcpy(backupRam, ramPtr, size);        
+    RTC_BKP0 = BACKUP_SRAM_PROOF_VALUE;  // Direct write
 }
 
 void RestoreMPURAM() {
@@ -348,9 +394,9 @@ int main(void) {
     uint32_t lastTickCount = TwoMHzTicksSinceStart();
 
     bool FIRQHasBeenTriggered = false;
-//    bool RAMHasBeenBackedUp = false;
+    bool RAMHasBeenBackedUp = false;
     uint32_t FIRQTriggeredTicks = 0;
-//    uint32_t lastTimeRAMBackedUp = 0;
+    uint32_t lastTimeRAMBackedUp = 0;
     uint32_t lastTimeUpdate = 0;
 
     while (1) {        
@@ -358,15 +404,15 @@ int main(void) {
         if (ASICGetBlanking()) {
             // run faster if we're still in blanking
             if (currentTickCount==lastTickCount) currentTickCount = lastTickCount + 1;
-        }/* else {
-            // save settings every 30 seconds
-            if (currentTickCount>(lastTimeRAMBackedUp+60000000)) RAMHasBeenBackedUp = false;
+        } else {
+            // save settings every 60 seconds
+            if (currentTickCount>(lastTimeRAMBackedUp+10000000)) RAMHasBeenBackedUp = false;
             if (!RAMHasBeenBackedUp) {
                 RAMHasBeenBackedUp = true;
                 lastTimeRAMBackedUp = currentTickCount;
                 BackupRAM();
             }
-        }*/
+        }
 
         // Twice a minute (roughly) update the date & time on ASIC
         if ( (currentTickCount/8000000)!=lastTimeUpdate ) {
