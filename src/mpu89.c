@@ -17,9 +17,11 @@ byte DisplayActivePage = 0;
 byte DisplayNextActivePage = 0;
 byte DisplayScanlineTrigger = 31;
 byte DisplayCurrentScanline = 0;
+bool DisplayHighPageNeedsOverride = false;
 int memoryWrites;
 int protectedMemoryWriteAttempts = 0;
 int ticksIrq = 0;
+static uint32_t elapsedTicks;
 byte *ROM;
 
 uint32_t UpperAddressMask = 0x00000000;
@@ -115,6 +117,15 @@ void MCUPortInit(void) {
 #endif
 
 
+void MPUMakePortsSafeForBlanking() {
+  // latch lamp rows/cols with nothing
+  // latch solenoids to nothing
+  // turn off flippers and GI
+  // turn off switch rows/cols just for good measure
+  // turn off alphanumeric display stuff
+}
+
+
 bool MPUInit() {
 
   // clear RAM and Display's shadow RAM
@@ -126,8 +137,8 @@ bool MPUInit() {
   while(words--) *p++ = 0;
 
   MCUPortInit();
+  MPUMakePortsSafeForBlanking();
   HPSoundCardInitConnection();
-  HPSoundCardTrackPlayPoly(217);
   SetDataBusDirection(true);
   ticksIrq = 0;
   protectedMemoryWriteAttempts = 0;
@@ -142,12 +153,12 @@ bool MPUInit() {
 void MPURelease() {
 }
 
-void MPUReset() {
+void MPUReset(bool turnOnBlanking) {
   ticksIrq = 0;
   protectedMemoryWriteAttempts = 0;
   memoryWrites = 0;
   CPUReset();
-  ASICReset();
+  ASICReset(turnOnBlanking);
   if (ASICGetDateTimeMemoryOffset()<RAM_SIZE) {
     ASICSetDateTimeMemoryPointer(&RAM[ASICGetDateTimeMemoryOffset()]);
   }
@@ -188,7 +199,7 @@ byte MPUGetDipSwitchByte() {
 }
 
 void MPUStart() {
-  MPUReset();
+  MPUReset(true);
 }
 
 unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSteps) {
@@ -196,6 +207,7 @@ unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSte
   while (ticksExecuted < ticksToRun) {
     unsigned short singleTicks = CPUSteps(tickSteps);
     ticksExecuted += singleTicks;
+    elapsedTicks += singleTicks;
     ticksIrq += singleTicks;
 
     // This is the periodic interrupt for the ISR that reads switches
@@ -203,6 +215,7 @@ unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSte
     if (ticksIrq>=2048) {
       ticksIrq = 0;
       CPUIRQ();
+      HPSoundCardUpdate(); // no need to check this constantly
     }
 
     ASICExecuteCycle(singleTicks);
@@ -216,7 +229,7 @@ void MPUWriteMemory(unsigned int offset, byte value) {
 }
 
 byte MPURead8(unsigned short offset) {
-
+/*
   if (offset==WPC_SWITCH_COL_SELECT) {
     uint8_t test = ReadDataBus();
     if (test) {
@@ -224,6 +237,7 @@ byte MPURead8(unsigned short offset) {
     }
   }
   SetAddressBus(offset);
+*/  
   if (offset<RAM1_UPPER_ADDRESS) { // Anything less than 0x3000 (technically 0x2000-0x2FFF is no man's land
 
     /*
@@ -255,6 +269,8 @@ byte MPURead8(unsigned short offset) {
   } else if (offset<=BANKED_ROM_UPPER_ADDRESS) { // Anything less than 0x8000
     return MPUBankswitchedRead(offset);
   } else {
+//    if (offset==0xFFEC) return 0x00;
+//    if (offset==0xFFED) return 0xFF;
     uint32_t adjustedAddress = (uint32_t)offset | UpperAddressMask;
     return ROM[adjustedAddress];
   }
@@ -307,7 +323,7 @@ byte MPUBankswitchedRead(unsigned int offset) {
 
 
 
-__attribute__((always_inline)) static inline void WriteDisplay(uint16_t address, uint8_t data) {
+__attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
   // 1. Setup Phase (Bus is idle, Transceiver is off)
   SetAddressBus(address);
   SetDataBus(data);
@@ -362,7 +378,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     if (offset==WPCS_DATA) {
-      HPSoundCardTrackPlayPoly(value);
+      HPSoundCardHandleCommand(value);
       return;
     }
     ASICWrite(offset, value);
@@ -376,7 +392,12 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   } else if (offset>=DISPLAY_RAM_UPPER_PAGE_START && offset<=DISPLAY_RAM_UPPER_PAGE_END) {
     // Trying to write to the high page of display
     DisplayHighPageStartAddress[offset-DISPLAY_RAM_UPPER_PAGE_START] = value;
-    WriteDisplay(offset, value);
+    if (CPUGetPC()!=0x60DE) {
+      WriteDisplay(offset, value);
+      DisplayHighPageNeedsOverride = false;
+    } else {
+      DisplayHighPageNeedsOverride = true;
+    }
   } else if (offset==WPC_DMD_LOW_PAGE) {
     DisplayLowPage = value;
     if (DisplayLowPage>15) DisplayLowPage = 15;
@@ -402,7 +423,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
 
 
 
-__attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t address) {
+__attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   uint8_t result;
 
   SetAddressBus(address);    
@@ -570,7 +591,12 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t addres
 byte MPUHardwareRead(unsigned int offset) {
 
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
-    if (offset==WPCS_CONTROL_STATUS) return 0x80;
+    if (offset==WPCS_CONTROL_STATUS) {
+      if (HPSoundCardCheckForOutboundByte(elapsedTicks)) return 0x01;
+      else return 0x00;
+    } else if (offset==WPCS_DATA) {
+      return HPSoundCardGetOutboundByte();
+    }
     return ASICRead(offset);
   }
 
@@ -667,10 +693,13 @@ void MPUFIRQ() {
 
 
 uint8_t *MPUGetNVRAMStart() {
-  return &RAM[0x1730];
+  return &RAM[0x16A1];
 }
 
 uint16_t MPUGetNVRAMSize() {
-  return 0x8D0;
+  return 0x95F;
 }
 
+bool MPUDisplayHighPageOverride() {
+  return DisplayHighPageNeedsOverride;
+}

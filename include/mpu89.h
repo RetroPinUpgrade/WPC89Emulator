@@ -44,7 +44,8 @@ typedef uint8_t byte;
 bool MPUInit();
 void MPURelease();
 
-void MPUReset();
+void MPUReset(bool turnOnBlanking);
+void MPUMakePortsSafeForBlanking();
 void MPUSetROMAddress(uint8_t *romLocation, uint32_t romSize);
 void MPUSetCabinetInput(byte value);
 void MPUSetSwitchInput(int switchNr, int optionalValue);
@@ -74,6 +75,11 @@ void MPUCurrentScanline(byte curScanLine);
 void MPUVerticalRefresh();
 byte MPUGetTriggerScanline();
 void MPUMPUActivateScanlineTrigger();
+bool MPUDisplayHighPageOverride();
+
+void WriteDisplay(uint16_t address, uint8_t data);
+uint8_t ReadDisplay(uint16_t address);
+
 
 // Simple delay helper: ~125ns at 240MHz (approx 30 cycles)
 __attribute__((always_inline)) static inline void DelayQuarterCycle(void) {

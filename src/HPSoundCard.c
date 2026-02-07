@@ -33,6 +33,7 @@
 #define SOM2                        0xaa
 #define EOM                         0x55      
 
+#define HPCS_BACKGROUND_MUSIC_NOT_PLAYING   0xFFFF
 uint16_t HPSCVoiceTable[MAX_NUM_VOICES];
 uint8_t HPSCrxMessage[MAX_MESSAGE_LEN];
 char HPSCVerion[VERSION_STRING_LEN];
@@ -43,6 +44,42 @@ uint8_t HPSCrxLen;
 bool HPSCrxMsgReady;
 bool HPSCVerionRcvd;
 bool HPSCSysinfoRcvd;
+bool HPSCDataReady = false;
+uint8_t HPCSNextDataByte = 0xFF;
+uint8_t HPCSNumberOfBytesInMessage = 0;
+uint8_t HPCSIncomingMessage[10];
+int HPCSBackgroundMusic = HPCS_BACKGROUND_MUSIC_NOT_PLAYING;
+
+#define WPC_SOUND_VERSION_REQUEST         95
+#define WPC_SOUND_VOLUME_COMMMAND         121
+#define WPC_SOUND_UNKNOWN_2               122
+#define WPC_SOUND_STOP_ALL_TRACKS         125
+#define WPC_SOUND_STOP_BACKGROUND         126
+#define WPC_SOUND_STOP_BACKGROUND_2       127
+#define WPC_SOUND_UNKNOWN_COUPLETS_START  96    // This will be followed by XX - 64
+#define WPC_SOUND_UNKNOWN_COUPLETS_END    111
+
+#define HPCS_SOUND_TYPE_UNKNOWN             0
+#define HPCS_SOUND_TYPE_BACKGROUND_MUSIC    1
+#define HPCS_SOUND_TYPE_CALLOUT             2
+#define HPCS_SOUND_TYPE_MUSIC               3
+#define HPCS_SOUND_TYPE_SOUND_FX            4
+
+bool HPCSVersionRequestSeen = false;
+
+#define HPCS_NUMBER_OF_BACKGROUND_MUSIC_TRACKS  1
+#define HPCS_NUMBER_OF_ONE_SHOT_MUSIC_TRACKS    2
+#define HPCS_NUMBER_OF_CALLOUT_TRACKS           3
+#define HPCS_NUMBER_OF_SOUND_EFFECTS_TRACKS     3
+int HPCSBackgroundMusicTracks[HPCS_NUMBER_OF_BACKGROUND_MUSIC_TRACKS] = {2};
+int HPCSOneShotMusicTracks[HPCS_NUMBER_OF_ONE_SHOT_MUSIC_TRACKS] = {3, 5};
+int HPCSCalloutTracks[HPCS_NUMBER_OF_CALLOUT_TRACKS] = {26, 31, 72};
+int HPCSSoundEffectsTracks[HPCS_NUMBER_OF_SOUND_EFFECTS_TRACKS] = {86, 142, 143};
+
+// Unmapped
+// 86 ?
+// 142 credits (single?)
+// 143 credits (center slot / multiple?, also max?)
 
 void HPSoundCardTrackControl(int trk, int code);
 void HPSoundCardTrackControlLock(int trk, int code, bool lock);
@@ -68,6 +105,30 @@ __attribute__((always_inline)) static inline void SerialWriteBuf(uint8_t *buf, u
         buf += 1;
     }
 }
+
+
+
+/**
+ * Maps linear volume (0-255) to signed 16-bit decibels (dB).
+ * 0       -> -70 dB
+ * 230     -> 0 dB (Unity)
+ * 255     -> +15 dB
+ * * Note: Values will repeat because the input range (256) 
+ * is larger than the output range (85).
+ */
+static const int16_t HPSCVolumeToGain[32] = {
+  -40, -38, -37, -35, -34, -32, -30, -29, 
+  -27, -26, -24, -22, -21, -19, -18, -16, 
+  -14, -13, -11, -10,  -8,  -6,  -5,  -3, 
+   -2,   0,   3,   7,  10,  13,  17,  20
+};
+
+int HPCSGetGainFromLevel(byte level) {
+  if (level>31) level = 31;
+  return HPSCVolumeToGain[level];
+}
+
+
 
 
 bool HPSoundCardInitConnection() {
@@ -118,8 +179,11 @@ bool HPSoundCardInitConnection() {
     txbuf[2] = 0x05;
     txbuf[3] = CMD_GET_SYS_INFO;
     txbuf[4] = EOM;
-    SerialWriteBuf(txbuf, 5);    
+    SerialWriteBuf(txbuf, 5);  
 
+    HPSoundCardStopAllTracks();
+    HPSoundCardMasterGain(0);
+    HPSoundCardTrackPlayPoly(999); // startup bong
     return true;
 }
 
@@ -135,6 +199,106 @@ void HPSoundCardFlush(void) {
   while(SerialAvailable()) SerialReadByte();
 }
 
+
+
+void HPSoundCardHandleCommand(byte command) {
+  if (HPCSNumberOfBytesInMessage) {
+    // This is non-zero if we're building up a message
+    if (HPCSIncomingMessage[0]==WPC_SOUND_VOLUME_COMMMAND) {
+      // This is a volume call, which means that 
+      // byte 1 is volume and byte 2 is 255-volume
+      if (HPCSNumberOfBytesInMessage==1) {
+        HPCSIncomingMessage[1] = command;
+        HPCSNumberOfBytesInMessage += 1;
+      } else {
+        HPCSNumberOfBytesInMessage = 0;
+        HPSoundCardMasterGain(HPCSGetGainFromLevel(HPCSIncomingMessage[1]));
+      }
+    } else if (HPCSIncomingMessage[0]==WPC_SOUND_STOP_ALL_TRACKS) {
+      if (command==127) {
+        HPSoundCardStopAllTracks();
+        HPCSNumberOfBytesInMessage = 0;
+        HPCSBackgroundMusic = HPCS_BACKGROUND_MUSIC_NOT_PLAYING;
+      }
+    } else if (command>=WPC_SOUND_UNKNOWN_COUPLETS_START && command<=WPC_SOUND_UNKNOWN_COUPLETS_END) {
+      // Don't know what these messages mean, but this seems 
+      // to be the end of them
+      HPCSNumberOfBytesInMessage = 0;
+    } else {
+      HPCSNumberOfBytesInMessage = 0;
+    }
+  } else {
+    // single byte commands or first byte in multi-byte message
+    if (command==WPC_SOUND_VERSION_REQUEST) {
+      HPCSVersionRequestSeen = true;
+    } else if (command==WPC_SOUND_STOP_BACKGROUND) {
+      for (int count=0; count<HPCS_NUMBER_OF_BACKGROUND_MUSIC_TRACKS; count++) {
+        HPSoundCardTrackStop(HPCSBackgroundMusicTracks[count]);
+      }
+      HPCSBackgroundMusic = HPCS_BACKGROUND_MUSIC_NOT_PLAYING;
+    } else if (command==WPC_SOUND_VOLUME_COMMMAND) {
+      // start of a multi-byte command, so we just record it and move on
+      HPCSIncomingMessage[0] = WPC_SOUND_VOLUME_COMMMAND;
+      HPCSNumberOfBytesInMessage = 1;
+    } else if (command==WPC_SOUND_STOP_ALL_TRACKS || command==WPC_SOUND_STOP_BACKGROUND_2) {
+      HPCSIncomingMessage[0] = WPC_SOUND_STOP_ALL_TRACKS;
+      HPCSNumberOfBytesInMessage = 1;
+    } else if (command==WPC_SOUND_UNKNOWN_2) {
+
+    } else if (command>=WPC_SOUND_UNKNOWN_COUPLETS_START && command<=WPC_SOUND_UNKNOWN_COUPLETS_END) {
+      HPCSIncomingMessage[0] = command;
+      HPCSNumberOfBytesInMessage = 1;
+    } else {
+      uint8_t soundType = HPCS_SOUND_TYPE_UNKNOWN;
+      for (int count=0; soundType==HPCS_SOUND_TYPE_UNKNOWN && count<HPCS_NUMBER_OF_BACKGROUND_MUSIC_TRACKS; count++) {
+        if (command==HPCSBackgroundMusicTracks[count]) {
+          soundType = HPCS_SOUND_TYPE_BACKGROUND_MUSIC;
+          HPCSBackgroundMusic = command;
+          HPSoundCardTrackPlayPolyLock(HPCSBackgroundMusic, true);
+          HPSoundCardTrackLoop(HPCSBackgroundMusic, true);
+        }
+      }
+      for (int count=0; soundType==HPCS_SOUND_TYPE_UNKNOWN && count<HPCS_NUMBER_OF_ONE_SHOT_MUSIC_TRACKS; count++) {
+        if (command==HPCSOneShotMusicTracks[count]) {
+          soundType = HPCS_SOUND_TYPE_MUSIC;
+          HPSoundCardTrackPlayPolyLock(command, true);
+        }
+      }
+      for (int count=0; soundType==HPCS_SOUND_TYPE_UNKNOWN && count<HPCS_NUMBER_OF_CALLOUT_TRACKS; count++) {
+        if (command==HPCSCalloutTracks[count]) {
+          soundType = HPCS_SOUND_TYPE_CALLOUT;
+          HPSoundCardTrackPlayPoly(command);
+        }
+      }
+      if (soundType==HPCS_SOUND_TYPE_UNKNOWN) {
+        // We're going to assume that this track is a SFX track
+        soundType = HPCS_SOUND_TYPE_SOUND_FX;
+        HPSoundCardTrackPlayPoly(command);
+      }
+    }
+  }
+
+}
+
+int HPCSStartupBytesSent = 0;
+byte HPCSNextOutboundByte = 0x00;
+
+bool HPSoundCardCheckForOutboundByte(unsigned long curTicks) {
+  if (HPCSStartupBytesSent==0 && curTicks>20753100) {
+    HPCSNextOutboundByte = 1;
+    return true;
+  } else if (HPCSStartupBytesSent==1 && HPCSVersionRequestSeen) {
+    HPCSNextOutboundByte = 209;
+    return true;
+  }
+
+  return false;
+}
+
+byte HPSoundCardGetOutboundByte() {
+  HPCSStartupBytesSent += 1;
+  return HPCSNextOutboundByte;
+}
 
 
 void HPSoundCardUpdate(void) {
@@ -491,3 +655,4 @@ void HPSoundCardSetTriggerBank(int bank) {
   txbuf[5] = EOM;
   SerialWriteBuf(txbuf, 6);
 }
+

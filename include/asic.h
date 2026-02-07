@@ -70,7 +70,7 @@
 
 void ASICInit();
 void ASICRelease();
-void ASICReset();
+void ASICReset(bool turnOnBlanking);
 
 int ASICGetWDExpired();
 bool ASICGetWDReset();

@@ -162,7 +162,7 @@ void ASICInit() {
 void ASICRelease() {
 }
 
-void ASICReset() {
+void ASICReset(bool turnOnBlanking) {
     ASICPeriodicIRQTimerEnabled = false;
     ASICRomBank = 0;
     ASICDiagnosticLedToggleCount = 0;
@@ -182,7 +182,7 @@ void ASICReset() {
 #endif    
     ASICMidnightModeEnabled = false;
     ASICBlankSignalHigh = true;
-    SetBlanking(ASICBlankSignalHigh);
+    if (turnOnBlanking) SetBlanking(ASICBlankSignalHigh);
     ASICWatchdogTicks = WATCHDOG_ARMED_FOR_TICKS;
     ASICWatchdogExpiredCounter = 0;
     ASICCabinetSwitches = 0;

@@ -3,6 +3,7 @@
 #include "HPSoundCard.h"
 #include "gd32f4xx.h"
 #include "string.h"
+#include "RPU-WPC-Display.h"
 
 //#define FAKE_DISPLAY_FIRQ
 #define ROM_IN_C_FILE_ARRAY
@@ -10,6 +11,8 @@
 #ifdef ROM_IN_C_FILE_ARRAY
 uint8_t* GetROMPointer(void);
 uint32_t GetROMSize(void);
+uint8_t CheckROMIntegrity();
+const char *GetROMName();
 #endif
 
 void SwitchTo240MHz(void) {
@@ -258,7 +261,7 @@ void BackupDomainInit(void) {
 // Define pointer to backup SRAM
 #define BACKUP_SRAM_BASE    0x40024000
 #define BACKUP_SRAM_SIZE    0x1000  // 4KB
-#define BACKUP_SRAM_PROOF_VALUE     0xBC04  // stored in RTC_BKP0
+#define BACKUP_SRAM_PROOF_VALUE     0xBC05  // stored in RTC_BKP0
 void BackupRAM() {
     uint8_t *ramPtr = MPUGetNVRAMStart();
     uint16_t size = MPUGetNVRAMSize();
@@ -358,8 +361,6 @@ void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) 
 
 
 
-
-
 int main(void) {
     SwitchTo240MHz();
     // Right after reset, before doing anything else, read
@@ -378,20 +379,36 @@ int main(void) {
     // Main Application
     GPIO_BOP(GPIOE) = (1U << 14); // turn the LED on
     MPUInit(); // RAM is cleared in this function
-    RestoreMPURAM();
+    InitTimer0PWM(); // Turn on E and Q clock signals
+    SetBlanking(true); // This is temporary -- should be done through MPU
+   
+    if (RPUWPCDisplayInit()) {
+        RPUWPCShowLogoScreen();
+        RPUWPCDisplayText("Initializing\nROM...");
+    }
+
+    if (!CheckROMIntegrity()) {
+        // Report an error and stop here
+        while (1);
+    }
+    // The ROM is good -- we can get the name
+    // with this:
+    // GetROMName();
+
+    RestoreMPURAM();    
     MPUSetROMAddress(GetROMPointer(), GetROMSize());
     ASICInit();
     CPUSetCallbacks(MPUWrite8, MPURead8);
-    MPUReset();
+    SetBlanking(false); // This is temporary -- should be done through MPU
+    MPUReset(false); // Reset without turning on blanking
 
     rtc_time_reg = RTC_TIME;
     rtc_date_reg = RTC_DATE;
     SetASICFromDateTimeRegisters(rtc_date_reg, rtc_time_reg);
 
-    GPIO_BOP(GPIOC) = (1U << 0);
+    GPIO_BOP(GPIOC) = (1U << 0); // Turn off LED
 
     EnableCycleCounter();
-    InitTimer0PWM();
     uint32_t lastTickCount = TwoMHzTicksSinceStart();
 
     bool FIRQHasBeenTriggered = false;
@@ -402,6 +419,7 @@ int main(void) {
 
     while (1) {
         HPSoundCardUpdate();
+        if (MPUDisplayHighPageOverride()) RPUWPCDisplayShowLogo(1, lastTickCount);
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
         if (ASICGetBlanking()) {
             // run faster if we're still in blanking
