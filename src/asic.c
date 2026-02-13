@@ -472,9 +472,14 @@ uint8_t ASICRead(uint16_t offset) {
                 return 0;
             } else {
                 SetSwitchRowLine(false); // turn on U13
+                DelayQuarterCycle();
+                DelayQuarterCycle();
                 SetDataBusDirection(false); // set data lines to Read
                 DelayQuarterCycle();
+                DelayQuarterCycle();
                 uint8_t invertedData = ReadDataBus();
+                DelayQuarterCycle();
+                DelayQuarterCycle();
                 SetSwitchRowLine(true); // turn off U13
                 SetDataBusDirection(true); // set data lines to Write
                 return xformRow(invertedData ^ 0xFF);

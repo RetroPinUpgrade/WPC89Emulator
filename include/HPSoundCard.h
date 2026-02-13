@@ -13,37 +13,11 @@ void HPSoundCardUpdate(void);
 void HPSoundCardFlush(void);
 
 // System
-void HPSoundCardHandleCommand(byte command);
+void HPSoundCardHandleCommand(byte command, uint32_t curTicks);
 bool HPSoundCardCheckForOutboundByte(unsigned long curTicks);
 byte HPSoundCardGetOutboundByte();
 void HPSoundCardSetReporting(bool enable);
-void HPSoundCardSetAmpPwr(bool enable);
-bool HPSoundCardGetVersion(char *pDst, int len);
-int  HPSoundCardGetNumTracks(void);
-bool HPSoundCardIsTrackPlaying(int trk);
-int  HPSoundCardGetPlayingTrack(int voiceNum);
-void HPSoundCardMasterGain(int gain);
-void HPSoundCardStopAllTracks(void);
-void HPSoundCardResumeAllInSync(void);
 
-// Tracks
-void HPSoundCardTrackPlaySolo(int trk);
-void HPSoundCardTrackPlaySoloLock(int trk, bool lock);
-void HPSoundCardTrackPlayPoly(int trk);
-void HPSoundCardTrackPlayPolyLock(int trk, bool lock);
-void HPSoundCardTrackLoad(int trk);
-void HPSoundCardTrackLoadLock(int trk, bool lock);
-
-void HPSoundCardTrackStop(int trk);
-void HPSoundCardTrackPause(int trk);
-void HPSoundCardTrackResume(int trk);
-void HPSoundCardTrackLoop(int trk, bool enable);
-void HPSoundCardTrackGain(int trk, int gain);
-void HPSoundCardTrackFade(int trk, int gain, int time, bool stopFlag);
-
-// Settings
-void HPSoundCardSamplerateOffset(int offset);
-void HPSoundCardSetTriggerBank(int bank);
 
 
 #define HOMEPIN_SOUND_CARD_H

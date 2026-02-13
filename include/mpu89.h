@@ -144,15 +144,25 @@ __attribute__((always_inline)) static inline void SetDataBusDirection(bool outpu
 __attribute__((always_inline)) static inline void StrobeSwitchColLatch() {
     // 2. Raise the Clock (PE9) - LATCH HAPPENS HERE
     // The '374 latches on the Rising Edge (Low -> High)
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
     GPIO_BOP(GPIOE) = (1U << 9);
 
     // 3. Hold High (Pulse Width Delay)
     // At 240MHz, 5 NOPs ~= 20ns. 
     // We add a few extras just to be totally safe against bus jitter.
     DelayQuarterCycle();
+    DelayQuarterCycle();
 
     // 4. Lower the Clock (PE9)
     GPIO_BC(GPIOE) = (1U << 9);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
 }
 
 __attribute__((always_inline)) static inline void SetSwitchRowLine(bool lineValue) {

@@ -378,7 +378,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     if (offset==WPCS_DATA) {
-      HPSoundCardHandleCommand(value);
+      HPSoundCardHandleCommand(value, elapsedTicks);
       return;
     }
     ASICWrite(offset, value);
