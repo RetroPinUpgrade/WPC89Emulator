@@ -70,6 +70,11 @@ uint16_t HPSCNumTracks;
 uint8_t HPSCNumVoices;
 uint8_t HPSCrxCount;
 uint8_t HPSCrxLen;
+
+uint8_t HPSCMusicVolume = 31;
+uint8_t HPSCSFXVolume = 31;
+uint8_t HPSCCalloutsVolume = 31;
+
 bool HPSCrxMsgReady;
 bool HPSCVerionRcvd;
 bool HPSCSysinfoRcvd;
@@ -81,6 +86,11 @@ int HPSCBackgroundMusic = HPSC_BACKGROUND_MUSIC_NOT_PLAYING;
 int HPSCBackgroundMusicGain = 0;
 
 uint32_t HPSCStartTicksOfMessage = 0;
+
+#define HPSC_PRIMARY_VOLUME_MASK        0x000000FF
+#define HPSC_MUSIC_VOLUME_MASK          0x0000FF00
+#define HPSC_SFX_VOLUME_MASK            0x00FF0000
+#define HPSC_CALLOUTS_VOLUME_MASK       0xFF000000
 
 #define WPC_SOUND_VERSION_REQUEST         95
 #define HPSC_VERSION_NUMMBER              209
@@ -258,8 +268,22 @@ bool HPSoundCardInitConnection() {
     SerialWriteBuf(txbuf, 5);  
 
     HPSoundCardStopAllTracks();
-    byte volumeIndex = RTC_BKP9;
-    if (volumeIndex>31) volumeIndex = 20;
+    byte volumeIndex = RTC_BKP9 & HPSC_PRIMARY_VOLUME_MASK;
+    if (volumeIndex>31) volumeIndex = 20;        
+
+    HPSCMusicVolume = (RTC_BKP9 & HPSC_MUSIC_VOLUME_MASK)>>8;
+    HPSCSFXVolume = (RTC_BKP9 & HPSC_SFX_VOLUME_MASK)>>16;
+    HPSCCalloutsVolume = (RTC_BKP9 & HPSC_CALLOUTS_VOLUME_MASK)>>24;
+    if (HPSCMusicVolume>100) HPSCMusicVolume = 100;
+    if (HPSCSFXVolume>100) HPSCSFXVolume = 100;
+    if (HPSCCalloutsVolume>100) HPSCCalloutsVolume = 100;
+    if (HPSCMusicVolume<5) HPSCMusicVolume = 5;
+    if (HPSCSFXVolume<5) HPSCSFXVolume = 5;
+    if (HPSCCalloutsVolume<5) HPSCCalloutsVolume = 5;
+    
+    // put sanitized values back in RTC_BKP9
+    RTC_BKP9 = volumeIndex + (HPSCMusicVolume<<8) + (HPSCSFXVolume<<16) + (HPSCCalloutsVolume<<24);
+
     HPSCClearReturnMessagesQueue();
     HPSCPushMessageToQueue(20753100, 1);
     HPSoundCardMasterGain(HPSCGetGainFromLevel(volumeIndex));
@@ -391,7 +415,9 @@ void HPSoundCardHandleCommand(byte command, uint32_t curTicks) {
         HPSCNumberOfBytesInMessage += 1;
       } else {
         HPSCNumberOfBytesInMessage = 0;
-        RTC_BKP9 = HPSCIncomingMessage[1];
+        uint8_t newVol = HPSCIncomingMessage[1];
+        if (newVol>31) newVol = 31;
+        RTC_BKP9 = (RTC_BKP9&(~HPSC_PRIMARY_VOLUME_MASK)) | newVol;
         HPSoundCardMasterGain(HPSCGetGainFromLevel(HPSCIncomingMessage[1]));
       }
     } else if (HPSCIncomingMessage[0]==WPC_SOUND_STOP_ALL_TRACKS) {

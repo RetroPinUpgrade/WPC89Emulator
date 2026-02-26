@@ -4,6 +4,7 @@
 #include "gd32f4xx.h"
 #include "string.h"
 #include "RPU-WPC-Display.h"
+#include "RPU-WPC-OperatorMenu.h"
 
 //#define FAKE_DISPLAY_FIRQ
 #define ROM_IN_C_FILE_ARRAY
@@ -359,7 +360,7 @@ void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) 
     ASICSetCurrentDateTime(year, month, day, dow, hours, minutes);
 }
 
-
+#define CPU_TICKS_PER_SECOND    2000000U
 
 int main(void) {
     SwitchTo240MHz();
@@ -380,11 +381,12 @@ int main(void) {
     GPIO_BOP(GPIOE) = (1U << 14); // turn the LED on
     MPUInit(); // RAM is cleared in this function
     InitTimer0PWM(); // Turn on E and Q clock signals
+    RPU_WPC_SetupPorts();
     SetBlanking(true); // This is temporary -- should be done through MPU
    
-    if (RPUWPCDisplayInit()) {
-        RPUWPCShowLogoScreen();
-        RPUWPCDisplayText("Initializing\nROM...");
+    if (RPU_WPC_DisplayInit()) {
+        RPU_WPC_DisplayShowLogoScreen();
+        RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
     }
 
     if (!CheckROMIntegrity()) {
@@ -413,20 +415,23 @@ int main(void) {
 
     bool FIRQHasBeenTriggered = false;
     bool RAMHasBeenBackedUp = false;
-    uint32_t FIRQTriggeredTicks = 0;
+    bool pauseEmulationForMenu = false;
     uint32_t lastTimeRAMBackedUp = 0;
     uint32_t lastTimeUpdate = 0;
 
     while (1) {
         HPSoundCardUpdate();
-        if (MPUDisplayHighPageOverride()) RPUWPCDisplayShowLogo(1, lastTickCount);
+        if (MPUDisplayHighPageOverride()) RPU_WPC_DisplayShowLogo(1, lastTickCount);
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
         if (ASICGetBlanking()) {
-            // run faster if we're still in blanking
-            if (currentTickCount==lastTickCount) currentTickCount = lastTickCount + 1;
+            // also, check to see if the operator wants to 
+            // boot to the special menu 
+            if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest()) {
+                pauseEmulationForMenu = true;
+            }
         } else {
             // save settings every 60 seconds
-            if (currentTickCount>(lastTimeRAMBackedUp+10000000)) RAMHasBeenBackedUp = false;
+            if (currentTickCount>(lastTimeRAMBackedUp+(CPU_TICKS_PER_SECOND*60))) RAMHasBeenBackedUp = false;
             if (!RAMHasBeenBackedUp) {
                 RAMHasBeenBackedUp = true;
                 lastTimeRAMBackedUp = currentTickCount;
@@ -434,11 +439,11 @@ int main(void) {
             }
         }
 
-        // Twice a minute (roughly) update the date & time on ASIC
-        if ( (currentTickCount/8000000)!=lastTimeUpdate ) {
-            lastTimeUpdate = (currentTickCount/8000000);
+        // Every minute, update the date & time on ASIC
+        if ( (currentTickCount/(CPU_TICKS_PER_SECOND*60))!=lastTimeUpdate ) {
+            lastTimeUpdate = (currentTickCount/(CPU_TICKS_PER_SECOND*60));
             if (ASICDateTimeChanged()) {
-//                SetDateTimeFromASIC();
+                SetDateTimeFromASIC();
             } else {
                 rtc_time_reg = RTC_TIME;
                 rtc_date_reg = RTC_DATE;
@@ -449,32 +454,35 @@ int main(void) {
         // Calculate how many 2MHz ticks have passed since we last checked
         int32_t ticksToRun = (int32_t)(currentTickCount - lastTickCount);
 
-        if (ticksToRun > 0) {
+        if (!pauseEmulationForMenu) {
+            if (ticksToRun > 0) {
 
-            if (ticksToRun > 20000) ticksToRun = 20000;
+                if (ticksToRun > 20000) ticksToRun = 20000;
 
-            // Run the emulator for exactly that many ticks
-            uint32_t ticksExecuted = MPUExecuteCycle(ticksToRun, 1);
+                // Run the emulator for exactly that many ticks
+                uint32_t ticksExecuted = MPUExecuteCycle(ticksToRun, 1);
 
-            // Advance our "last run" marker by the amount we just executed
-            lastTickCount += ticksExecuted;
+                // Advance our "last run" marker by the amount we just executed
+                lastTickCount += ticksExecuted;
 
-            if ((currentTickCount/100000) & 0x01) GPIO_BC(GPIOE) = (1U << 14);
-            else GPIO_BOP(GPIOE) = (1U << 14);
-
-            if (FIRQTriggered()) {
-                if (FIRQHasBeenTriggered==false) {
-                    // We haven't fired this FIRQ yet
-                    FIRQHasBeenTriggered = true;
-                    FIRQTriggeredTicks = currentTickCount;
-                    ASICFirqSourceDmd(true);
-                    MPUFIRQ();
-                } else if (currentTickCount>(FIRQTriggeredTicks+5)) {
-//                    FIRQHasBeenTriggered = false;
+                if (FIRQTriggered()) {
+                    if (FIRQHasBeenTriggered==false) {
+                        // We haven't fired this FIRQ yet
+                        FIRQHasBeenTriggered = true;
+                        ASICFirqSourceDmd(true);
+                        MPUFIRQ();
+                    }
+                } else {
+                    // Reset for next FIRQ
+                    FIRQHasBeenTriggered = false;
                 }
-            } else {
-                // Reset for next FIRQ
-                FIRQHasBeenTriggered = false;
+            }
+        } else {
+            pauseEmulationForMenu = RPU_WPC_Menu(currentTickCount);
+            if (!pauseEmulationForMenu) {
+                lastTickCount = currentTickCount;
+                RPU_WPC_DisplayShowLogoScreen();
+                RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
             }
         }
 

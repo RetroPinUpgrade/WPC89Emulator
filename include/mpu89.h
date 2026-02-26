@@ -63,6 +63,7 @@ void MPUHardwareWrite(unsigned int offset, byte value);
 byte MPUHardwareRead(unsigned int offset);
 uint8_t *MPUGetNVRAMStart();
 uint16_t MPUGetNVRAMSize();
+uint8_t *MPUGetRAMAtIndex(uint16_t ramIndex);
 
 void MPUFIRQ();
 void MPUIRQ();
@@ -215,6 +216,14 @@ __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     DelayQuarterCycle();
 }
 
+__attribute__((always_inline)) static inline void SetLampRow(uint8_t rowValue) {
+    SetDataBus(rowValue);
+    SetDRLine(false);
+    DelayQuarterCycle();
+    StrobeLampRow();
+    SetDRLine(true);
+}
+
 // This timing was tested with a reproduction Power Driver board
 __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     // 1. Drive Low
@@ -229,6 +238,19 @@ __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     DelayQuarterCycle();
     DelayQuarterCycle();
     DelayQuarterCycle();
+}
+
+__attribute__((always_inline)) static inline void SetLampCol(uint8_t colValue) {
+    SetDataBus(colValue);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    SetDRLine(false);
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    StrobeLampCol();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    SetDRLine(true);
 }
 
 __attribute__((always_inline)) static inline void StrobeTriac(void) {
@@ -258,6 +280,15 @@ __attribute__((always_inline)) static inline void StrobeSol1(void) {
     DelayQuarterCycle();
 }
 
+
+__attribute__((always_inline)) static inline void SetSol1(uint8_t solValue) {
+    SetDataBus(solValue);
+    SetDRLine(false);
+    StrobeSol1();
+    DelayQuarterCycle();
+    SetDRLine(true);
+}
+
 __attribute__((always_inline)) static inline void StrobeSol2(void) {
     // 1. Drive Low
     GPIO_BC(GPIOC) = (1U << 5);
@@ -269,6 +300,14 @@ __attribute__((always_inline)) static inline void StrobeSol2(void) {
     GPIO_BOP(GPIOC) = (1U << 5);
     DelayQuarterCycle();
     DelayQuarterCycle();
+}
+
+__attribute__((always_inline)) static inline void SetSol2(uint8_t solValue) {
+    SetDataBus(solValue);
+    SetDRLine(false);
+    StrobeSol2();
+    DelayQuarterCycle();
+    SetDRLine(true);
 }
 
 __attribute__((always_inline)) static inline void StrobeSol3(void) {
@@ -284,6 +323,14 @@ __attribute__((always_inline)) static inline void StrobeSol3(void) {
     DelayQuarterCycle();
 }
 
+__attribute__((always_inline)) static inline void SetSol3(uint8_t solValue) {
+    SetDataBus(solValue);
+    SetDRLine(false);
+    StrobeSol3();
+    DelayQuarterCycle();
+    SetDRLine(true);
+}
+
 __attribute__((always_inline)) static inline void StrobeSol4(void) {
     // 1. Drive Low
     GPIO_BC(GPIOC) = (1U << 7);
@@ -295,6 +342,14 @@ __attribute__((always_inline)) static inline void StrobeSol4(void) {
     GPIO_BOP(GPIOC) = (1U << 7);
     DelayQuarterCycle();
     DelayQuarterCycle();
+}
+
+__attribute__((always_inline)) static inline void SetSol4(uint8_t solValue) {
+    SetDataBus(solValue);
+    SetDRLine(false);
+    StrobeSol4();
+    DelayQuarterCycle();
+    SetDRLine(true);
 }
 
 __attribute__((always_inline)) static inline bool FIRQTriggered(void) {

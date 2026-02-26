@@ -392,7 +392,8 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   } else if (offset>=DISPLAY_RAM_UPPER_PAGE_START && offset<=DISPLAY_RAM_UPPER_PAGE_END) {
     // Trying to write to the high page of display
     DisplayHighPageStartAddress[offset-DISPLAY_RAM_UPPER_PAGE_START] = value;
-    if (CPUGetPC()!=0x60DE) {
+    uint16_t currentPC = CPUGetPC();
+    if (currentPC!=0x60DE) {
       WriteDisplay(offset, value);
       DisplayHighPageNeedsOverride = false;
     } else {
@@ -689,6 +690,11 @@ byte MPUGetTriggerScanline() {
 
 void MPUFIRQ() {
   CPUFIRQ();
+}
+
+uint8_t *MPUGetRAMAtIndex(uint16_t ramIndex) {
+  if (ramIndex>=RAM_SIZE) return NULL;
+  return &RAM[ramIndex];
 }
 
 

@@ -331,25 +331,12 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             break;
 
         case WPC_LAMP_ROW_OUTPUT: {
-            SetDataBus(value);
-            SetDRLine(false);
-            DelayQuarterCycle();
-            StrobeLampRow();
-            SetDRLine(true);
+            SetLampRow(value);
             break;
         }
 
         case WPC_LAMP_COL_STROBE:
-            SetDataBus(value);
-            DelayQuarterCycle();
-            DelayQuarterCycle();
-            SetDRLine(false);
-            DelayQuarterCycle();
-            DelayQuarterCycle();
-            StrobeLampCol();
-            DelayQuarterCycle();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            SetLampCol(value);
             break;
 
         case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:    
@@ -357,38 +344,25 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             break;
 
         case WPC_SOLENOID_HIGHPOWER_OUTPUT:
-            SetDataBus(value);
-            SetDRLine(false);
-            StrobeSol2();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            SetSol2(value);
             break;
         case WPC_SOLENOID_LOWPOWER_OUTPUT:
-            SetDataBus(value);
-            SetDRLine(false);
-            StrobeSol4();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            SetSol4(value);
             break;
         case WPC_SOLENOID_FLASH1_OUTPUT:
-            SetDataBus(value);
-            SetDRLine(false);
-            StrobeSol3();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            SetSol3(value);
             break;
         case WPC_SOLENOID_GEN_OUTPUT:
-            SetDataBus(value);
-            SetDRLine(false);
-            StrobeSol1();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            SetSol1(value);
             break;
+        break;
 
         case WPC_LEDS:
             if (value != ASICOldDiagnostigLedState) {
                 ASICDiagnosticLedToggleCount++;
                 ASICOldDiagnostigLedState = value;
+                if (ASICDiagnosticLedToggleCount%2) GPIO_BC(GPIOE) = (1U << 14);
+                else GPIO_BOP(GPIOE) = (1U << 14);
             }
             break;
 
@@ -596,8 +570,8 @@ void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow,
     *month = ASICMonth;
     *day = ASICDay;
     *dow = ASICDOW;
-    *hour = ASICDOW;
-    *minute = ASICDOW;
+    *hour = ASICHour;
+    *minute = ASICMinute;
 
     ASICDateTimeHasChanged = false;    
 }

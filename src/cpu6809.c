@@ -754,15 +754,18 @@ uint8_t oDEC(uint8_t b) {
 }
 
 uint8_t oSUB(uint8_t b, uint8_t v) {
-  int16_t temp = b - v;
+  // Use a wider type to catch the borrow (bit 8)
+  uint16_t temp = (uint16_t)b - (uint16_t)v;
+  
   regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  if (temp & 0x100) {
-    regCC |= F_CARRY;
-  }
+  
+  if (temp & 0x100) regCC |= F_CARRY; // Borrow occurred
+  
   setV8(b, v, temp);
-  temp &= 0xFF;
-  regCC |= flagsNZ[temp];
-  return temp;
+  uint8_t result = temp & 0xFF;
+  regCC |= flagsNZ[result];
+  
+  return result;
 }
 
 uint16_t oSUB16(uint16_t b, uint16_t v) {
@@ -814,31 +817,39 @@ uint16_t oADD16(uint16_t b, uint16_t v) {
   return temp;
 }
 
+
 uint8_t oADC(uint8_t b, uint8_t v) {
-  int16_t temp = b + v + (regCC & F_CARRY);
+  uint8_t carryIn = (regCC & F_CARRY) ? 1 : 0;
+  int16_t temp = b + v + carryIn;
+
   regCC &= ~(F_HALFCARRY | F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  if (temp & 0x100) {
-    regCC |= F_CARRY;
-  }
+
+  if (temp & 0x100) regCC |= F_CARRY;
   setV8(b, v, temp);
-  if ((temp ^ b ^ v) & 0x10) {
+
+  // Correct Half-Carry for 6809: reflects carry out of bit 3
+  if (((b & 0x0F) + (v & 0x0F) + carryIn) & 0x10) {
     regCC |= F_HALFCARRY;
   }
-  temp &= 0xFF;
-  regCC |= flagsNZ[temp];
-  return temp;
+
+  uint8_t final = temp & 0xFF;
+  regCC |= flagsNZ[final];
+  return final;
 }
 
 uint8_t oSBC(uint8_t b, uint8_t v) {
-  int16_t temp = b - v - (regCC & F_CARRY);
+  uint8_t borrowIn = (regCC & F_CARRY) ? 1 : 0;
+  uint16_t temp = (uint16_t)b - (uint16_t)v - borrowIn;
+  
   regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  if (temp & 0x100) {
-    regCC |= F_CARRY;
-  }
+  
+  if (temp & 0x100) regCC |= F_CARRY; // Borrow occurred
+  
   setV8(b, v, temp);
-  temp &= 0xFF;
-  regCC |= flagsNZ[temp];
-  return temp;
+  uint8_t result = temp & 0xFF;
+  regCC |= flagsNZ[result];
+  
+  return result;
 }
 
 uint8_t oCMP(uint8_t b, uint8_t v) {
@@ -869,18 +880,19 @@ uint16_t oCMP16(uint16_t b, uint16_t v) {
   return temp;
 }
 
+
 uint8_t oNEG(uint8_t b) {
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  uint8_t original = b;
   b = (0 - b) & 0xFF;
-  if (b == 0x80) {
-    regCC |= F_OVERFLOW;
-  }
-  if (b == 0) {
-    regCC |= F_ZERO;
-  }
-  if (b & 0x80) {
-    regCC |= F_NEGATIVE | F_CARRY;
-  }
+  
+  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  
+  // 6809 Rule: Carry is set if the operand was NOT zero
+  if (original != 0) regCC |= F_CARRY; 
+  if (b == 0x80) regCC |= F_OVERFLOW;
+  if (b == 0)    regCC |= F_ZERO;
+  if (b & 0x80)  regCC |= F_NEGATIVE;
+  
   return b;
 }
 
@@ -1320,28 +1332,26 @@ void op_17(void) {
 }
 
 void op_19(void) {
-  //DAA
   uint8_t correctionFactor = 0;
   uint8_t nhi = regA & 0xF0;
   uint8_t nlo = regA & 0x0F;
-  int32_t addr;
-  
+  uint8_t oldCarry = regCC & F_CARRY; // Save carry from the ADD/ADC
+
   if (nlo > 0x09 || regCC & F_HALFCARRY) {
     correctionFactor |= 0x06;
   }
-  if (nhi > 0x80 && nlo > 0x09) {
+  if (oldCarry || nhi > 0x99 || (nhi > 0x89 && nlo > 0x09)) {
     correctionFactor |= 0x60;
   }
-  if (nhi > 0x90 || regCC & F_CARRY) {
-    correctionFactor |= 0x60;
-  }
-  addr = correctionFactor + regA;
-  // TODO Check, mame does not clear carry here
+
+  uint16_t result = (uint16_t)regA + correctionFactor;
+
   regCC &= ~(F_CARRY | F_NEGATIVE | F_ZERO | F_OVERFLOW);
-  if (addr & 0x100) {
+  if (result & 0x100 || oldCarry) {
     regCC |= F_CARRY;
   }
-  regA = addr & 0xFF;
+
+  regA = result & 0xFF;
   regCC |= flagsNZ[regA];
 }
 

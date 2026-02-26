@@ -4,21 +4,265 @@
 #include "mpu89.h"
 
 extern const unsigned char HPLogoFrame[512];
-extern const unsigned char FONT_5x7[][5];
+extern const unsigned char RPUWPC_FONT_5x7[][5];
+static uint8_t RPUWPC_ScratchBuffer[512];
+uint8_t RPUWPC_ScratchBufferCopy[512];
+uint8_t RPUWPC_FrontBufferNum = 0;
+uint8_t RPUWPC_BackBufferNum = 1;
 
-bool RPUWPCDisplayInit(){
-    WriteDisplay(WPC_DMD_LOW_PAGE, 0x00);
-    WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0x00);
-    for (int count=0; count<512; count++) {
-        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0x00);
+void RPU_WPC_DisplayClearScratchBuffer() {
+    for (int count=0; count<512; count++) RPUWPC_ScratchBuffer[count] = 0x00;
+}
+
+#include <stdint.h>
+#include <string.h>
+
+extern uint8_t RPUWPC_ScratchBufferCopy[512];
+extern uint8_t RPUWPC_ScratchBuffer[512];
+
+/**
+ * Shifts a specific row (16 bytes/128 pixels) from the Copy buffer to the main buffer.
+ * LSb is left-most pixel.
+ * shiftPixels > 0: Shift Right (towards MSb)
+ * shiftPixels < 0: Shift Left (towards LSb)
+ */
+void RPU_WPC_ShiftScratchRow(uint8_t rowNum, int shiftPixels) {
+    if (shiftPixels == 0 || rowNum >= 32) {
+        return;
     }
 
-    WriteDisplay(WPC_DMD_HIGH_PAGE, 0x01);
+    uint8_t *src = &RPUWPC_ScratchBufferCopy[rowNum * 16];
+    uint8_t *dst = &RPUWPC_ScratchBuffer[rowNum * 16];
+    
+    // Initialize destination row to 0
+    memset(dst, 0, 16);
+
+    int absShift = (shiftPixels < 0) ? -shiftPixels : shiftPixels;
+    int byteOffset = absShift / 8;
+    int bitOffset = absShift % 8;
+
+    // Entire row shifted off-screen
+    if (byteOffset >= 16) {
+        return;
+    }
+
+    if (shiftPixels > 0) {
+        /* SHIFT RIGHT: Moving pixels towards the end of the row (Right side)
+           In LSb-first, this is bit-shifting towards the MSb (0 -> 7) */
+        for (int i = 0; i < 16 - byteOffset; i++) {
+            uint8_t val = src[i];
+            int targetIdx = i + byteOffset;
+
+            // Current byte shift
+            dst[targetIdx] |= (val << bitOffset);
+
+            // Carry to next byte
+            if (bitOffset > 0 && (targetIdx + 1) < 16) {
+                dst[targetIdx + 1] |= (val >> (8 - bitOffset));
+            }
+        }
+    } else {
+        /* SHIFT LEFT: Moving pixels towards the start of the row (Left side)
+           In LSb-first, this is bit-shifting towards the LSb (7 -> 0) */
+        for (int i = byteOffset; i < 16; i++) {
+            uint8_t val = src[i];
+            int targetIdx = i - byteOffset;
+
+            // Current byte shift
+            dst[targetIdx] |= (val >> bitOffset);
+
+            // Carry to previous byte
+            if (bitOffset > 0 && (targetIdx - 1) >= 0) {
+                dst[targetIdx - 1] |= (val << (8 - bitOffset));
+            }
+        }
+    }
+}
+
+void RPU_WPC_DisplayUpdateCopyScratch() {
+    for (int count=0; count<512; count++) {
+        RPUWPC_ScratchBufferCopy[count] = RPUWPC_ScratchBuffer[count];        
+    }
+}
+
+
+
+
+/**
+ * LUT containing 32 starting offsets (0-255).
+ * Represents the delay before each row begins its shift.
+ * Index 0 = Top Row, Index 31 = Bottom Row.
+ */
+/*
+static const uint8_t WIPE_SINE_LUT[32] = {
+    0,   5,   12,  22,  34,  48,  64,  82, 
+    100, 118, 136, 154, 172, 188, 203, 216, 
+    227, 236, 243, 248, 251, 253, 254, 255,
+    255, 254, 253, 251, 248, 243, 236, 227 // Example sine-like curve
+};
+*/
+
+/**
+ * Iteratively wipes the display.
+ * @param speed Total ticks for full screen wipe (negative=left, positive=right)
+ * @param elapsedTicks Ticks passed since the wipe began
+ * @return true if wipe is active, false when complete
+ */
+bool RPU_WPC_DisplayWipe(int speed, uint32_t elapsedTicks) {
+    if (speed == 0) return false;
+
+    uint32_t absSpeed = (uint32_t)(speed < 0 ? -speed : speed);
+    int direction = (speed < 0) ? -1 : 1;
+
+    if (elapsedTicks==0) {
+        // populate the backbuffer with full scratch copy
+        for (int count=0; count<512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBufferCopy[count]);
+        }    
+        return true;
+    }
+
+    // Check if the global timer has exceeded the requested duration
+    if (elapsedTicks >= absSpeed) {
+        // populate the backbuffer with full scratch copy
+        for (int count=0; count<512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
+        }    
+        return false;
+    }
+
+    for (uint8_t row = 0; row < 32; row++) {
+        uint32_t rowStartTick = (absSpeed/(32*4))*row;
+        for (uint8_t col=0; col<16; col++) {
+            // Calculate the new byte for WriteDisplay
+            uint8_t mixedByte = RPUWPC_ScratchBufferCopy[row*16 + col];
+            if (elapsedTicks>=rowStartTick) {
+                // this row has started moving, so we have to shift/mix
+                // Calculate progress: how far the row should have moved since its start
+                uint32_t moveDuration = absSpeed - rowStartTick;
+                uint32_t timeElapsedSinceStart = elapsedTicks - rowStartTick;
+                if (moveDuration == 0) moveDuration = 1; // Safety
+    
+                // Linear interpolation to 128 pixels
+                int pixelsToShift = (int)((128 * (uint64_t)timeElapsedSinceStart) / moveDuration);
+                                
+                if (pixelsToShift > 128) {
+                    mixedByte = RPUWPC_ScratchBuffer[row*16 + col];
+                } else if (direction==1) {
+                    int byteOffset = pixelsToShift / 8;
+                    int bitOffset = pixelsToShift % 8;
+
+                    if ((byteOffset)>col) {
+                        mixedByte = RPUWPC_ScratchBuffer[row*16+col];
+                    } else if (byteOffset==col) {
+                        // This byte is a mix of the two buffers
+                        mixedByte = RPUWPC_ScratchBuffer[row*16+col] & (0xFF>>(8-(bitOffset)));
+                        mixedByte |= RPUWPC_ScratchBufferCopy[row*16] << (bitOffset);
+                    } else {
+                        mixedByte = RPUWPC_ScratchBufferCopy[row*16 + (col-1) - (byteOffset)]>>(8-(bitOffset));
+                        mixedByte |= RPUWPC_ScratchBufferCopy[row*16 + col - (byteOffset)]<<(bitOffset);
+                    }
+                } else {
+                    int byteOffset = pixelsToShift / 8;
+                    int bitOffset = pixelsToShift % 8;
+                
+                    if (col > (15 - byteOffset)) {
+                        // Trailing edge: This part of the screen is now showing the background
+                        mixedByte = RPUWPC_ScratchBuffer[row * 16 + col];
+                    } else if (col == (15 - byteOffset)) {
+                        // Seam: The rightmost byte of the scrolling buffer meets the background
+                        mixedByte = RPUWPC_ScratchBuffer[row * 16 + col] & (0xFF << (8 - bitOffset));
+                        mixedByte |= RPUWPC_ScratchBufferCopy[row * 16 + 15] >> bitOffset;
+                    } else {
+                        // General case: Pulling from the copy buffer and shifting left
+                        mixedByte = RPUWPC_ScratchBufferCopy[row * 16 + col + byteOffset] >> bitOffset;
+                        mixedByte |= RPUWPC_ScratchBufferCopy[row * 16 + col + byteOffset + 1] << (8 - bitOffset);
+                    }
+                }
+            }
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+(row*16 + col), mixedByte);
+        }
+    }
+
+    return true;
+}
+
+
+bool RPU_WPC_DisplayWipeUD(int speed, uint32_t elapsedTicks) {
+    if (speed == 0) return false;
+
+    uint32_t absSpeed = (uint32_t)(speed < 0 ? -speed : speed);
+    int direction = (speed < 0) ? -1 : 1;
+
+    if (elapsedTicks==0) {
+        // populate the backbuffer with full scratch copy
+        for (int count=0; count<512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBufferCopy[count]);
+        }    
+        return true;
+    }
+
+    // Check if the global timer has exceeded the requested duration
+    if (elapsedTicks >= absSpeed) {
+        // populate the backbuffer with full scratch copy
+        for (int count=0; count<512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
+        }    
+        return false;
+    }
+
+    for (uint8_t row = 0; row < 32; row++) {
+        uint8_t *rowPtr;
+        int rowOffset = (elapsedTicks*32) / absSpeed;
+        if (direction==-1) {
+            if (row>(31-rowOffset)) rowPtr = &RPUWPC_ScratchBuffer[row*16];
+            else rowPtr = &RPUWPC_ScratchBufferCopy[(row+rowOffset)*16];
+        } else {
+            if (row<rowOffset) rowPtr = &RPUWPC_ScratchBuffer[row*16];
+            else rowPtr = &RPUWPC_ScratchBufferCopy[(row-rowOffset)*16];
+        }
+        for (int col=0; col<16; col++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+col + row*16, rowPtr[col]);
+        }
+    }
+    return true;
+}
+
+
+void RPU_WPC_DisplayUpdateBackBuffer() {
+    // push the scratch buffer to the back buffer
+    for (int count=0; count<512; count++) {
+        WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
+    }    
+}
+
+void RPU_WPC_DisplayFlipBackToFront() {
+    uint8_t tempBuffer = RPUWPC_FrontBufferNum;
+    RPUWPC_FrontBufferNum = RPUWPC_BackBufferNum;
+    RPUWPC_BackBufferNum = tempBuffer;
+
+    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontBufferNum);
+    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackBufferNum);
+    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontBufferNum);
+}
+
+
+bool RPU_WPC_DisplayInit(){
+    RPUWPC_FrontBufferNum = 14;
+    RPUWPC_BackBufferNum = 15;
+    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontBufferNum);
+    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackBufferNum);
+    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontBufferNum);
+    for (int count=0; count<512; count++) {
+        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0x00);
+        WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, 0x00);
+    }
+
     WriteDisplay(WPC_DMD_SCANLINE, 0x40);
     return true;
 }
 
-bool RPUWPCShowLogoScreen(int pageNum) {
+bool RPU_WPC_DisplayShowLogoScreen(int pageNum) {
     for (int count=0; count<512; count++) {
         if (pageNum==0) WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, HPLogoFrame[count]);
         else if (pageNum==1) WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, HPLogoFrame[count]);
@@ -30,13 +274,23 @@ bool RPUWPCShowLogoScreen(int pageNum) {
  * @brief Draws a single pixel in the 128x32 buffer.
  * @note LSB-first packing: First pixel of the byte is the left-most.
  */
-static inline void DrawPixel(uint8_t *buffer, int x, int y) {
+static inline void DrawPixelToScratch(uint8_t *buffer, int x, int y) {
     if (x < 0 || x >= 128 || y < 0 || y >= 32) return;
     // (y * 16) gets us to the row (128 pixels / 8 bits = 16 bytes per row)
     // (x >> 3) gets us to the correct byte in that row
     // (x & 7) gets us the bit index (0-7), where 0 is the LSB
     buffer[(y * 16) + (x >> 3)] |= (1 << (x & 7));
 }
+
+void RPU_WPC_DisplayDrawPixel(uint8_t x, uint8_t y, uint8_t color) {
+    if (x < 0 || x >= 128 || y < 0 || y >= 32) return;
+    // (y * 16) gets us to the row (128 pixels / 8 bits = 16 bytes per row)
+    // (x >> 3) gets us to the correct byte in that row
+    // (x & 7) gets us the bit index (0-7), where 0 is the LSB
+    if (color) RPUWPC_ScratchBuffer[(y * 16) + (x >> 3)] |= (1 << (x & 7));
+    else RPUWPC_ScratchBuffer[(y * 16) + (x >> 3)] &= ~(1 << (x & 7));
+}
+
 
 /**
  * @brief Prints a wrapped and clipped string into a 512-byte display buffer.
@@ -80,14 +334,14 @@ void DrawTextWrapped(uint8_t *buffer, int x1, int y1, int x2, int y2, int x, int
             uint8_t fontIdx = c - 0x20;
             
             for (int col = 0; col < 5; col++) {
-                uint8_t columnData = FONT_5x7[fontIdx][col];
+                uint8_t columnData = RPUWPC_FONT_5x7[fontIdx][col];
                 for (int row = 0; row < 7; row++) {
                     if (columnData & (1 << row)) {
                         int px = curX + col;
                         int py = curY + row;
                         // Local Bounding Box Clipping
                         if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
-                            DrawPixel(buffer, px, py);
+                            DrawPixelToScratch(buffer, px, py);
                         }
                     }
                 }
@@ -120,23 +374,32 @@ void ClearBufferArea(uint8_t *buffer, int x1, int y1, int x2, int y2) {
     }
 }
 
-static uint8_t ScratchBuffer[512];
 
-void RPUWPCDisplayText(const char *message) {
+void RPU_WPC_DrawTextToScratch(const char *message) {
+    DrawTextWrapped(RPUWPC_ScratchBuffer, 3, 0, 127, 31, 3, 3, message);
+}
+
+void RPU_WPC_DrawTextToScratchXY(const char *message, int xCorner, int yCorner) {
+    DrawTextWrapped(RPUWPC_ScratchBuffer, xCorner, yCorner, 127, 31, xCorner, yCorner, message);
+}
+
+
+void RPU_WPC_DisplayTextWithLogo(const char *message) {
     for (int count=0; count<512; count++) {
-        ScratchBuffer[count] = HPLogoFrame[count];
+        RPUWPC_ScratchBuffer[count] = HPLogoFrame[count];
     }
-    DrawTextWrapped(ScratchBuffer, 40, 3, 126, 29, 40, 3, message);
+    DrawTextWrapped(RPUWPC_ScratchBuffer, 40, 3, 126, 29, 40, 3, message);
     for (int count=0; count<512; count++) {
-        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, ScratchBuffer[count]);
+        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
     }
 }
 
+
 uint32_t RPUWPCDisplayLogoBaseTickCount = 0;
-void RPUWPCDisplayShowLogo(int pageNum, uint32_t tickCount) {
+void RPU_WPC_DisplayShowLogo(int pageNum, uint32_t tickCount) {
     if (RPUWPCDisplayLogoBaseTickCount==0 || (tickCount-20000000)>RPUWPCDisplayLogoBaseTickCount) {
         RPUWPCDisplayLogoBaseTickCount = tickCount;
-        RPUWPCShowLogoScreen(pageNum);
+        RPU_WPC_DisplayShowLogoScreen(pageNum);
     }
 }
 
@@ -181,7 +444,7 @@ const unsigned char HPLogoFrame[512] = {
 // Format: Column-major, 1 byte = 1 vertical column (LSB = top pixel)
 // Full 5x7 Font Array (ASCII 0x20 - 0x7E)
 // Format: Column-major, 1 byte = 1 vertical column (LSB = top pixel)
-const unsigned char FONT_5x7[95][5] = {
+const unsigned char RPUWPC_FONT_5x7[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // 0x20 (Space)
     {0x00, 0x00, 0x5F, 0x00, 0x00}, // !
     {0x00, 0x07, 0x00, 0x07, 0x00}, // "
