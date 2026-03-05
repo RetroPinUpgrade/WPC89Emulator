@@ -11,6 +11,7 @@ void HPSoundCardMasterGain(int gain);
 void HPSoundCardStopAllTracks(void);
 void HPSoundCardResumeAllInSync(void);
 
+
 // Tracks
 void HPSoundCardTrackPlaySolo(int trk);
 void HPSoundCardTrackPlaySoloLock(int trk, bool lock);
@@ -61,6 +62,14 @@ void HPSoundCardSetTriggerBank(int bank);
 #define SOM1                        0xf0
 #define SOM2                        0xaa
 #define EOM                         0x55      
+
+#define RX_BUFFER_SIZE 128
+#define TX_BUFFER_SIZE 128
+// Global variables for the ring buffer
+uint8_t RxBuffer[RX_BUFFER_SIZE];
+uint32_t ReadIndex = 0;
+// Global buffer dedicated to DMA transmission
+uint8_t TxBuffer[TX_BUFFER_SIZE];
 
 #define HPSC_BACKGROUND_MUSIC_NOT_PLAYING   0xFFFF
 uint16_t HPSCVoiceTable[MAX_NUM_VOICES];
@@ -132,25 +141,63 @@ void HPSoundCardTrackControl(int trk, int code);
 void HPSoundCardTrackControlLock(int trk, int code, bool lock);
 void HPSoundCardFlush(void);
 
-__attribute__((always_inline)) static inline uint8_t SerialReadByte(void) {
-    while (RESET == usart_flag_get(USART1, USART_FLAG_RBNE));
-    return (uint8_t)usart_data_receive(USART1);
+
+__attribute__((always_inline)) static inline uint32_t SerialAvailable(void) {
+  // Calculate the current write index based on remaining DMA transfers
+  uint32_t writeIndex = RX_BUFFER_SIZE - dma_transfer_number_get(DMA0, DMA_CH5);
+  
+  if (writeIndex >= ReadIndex) {
+      return writeIndex - ReadIndex;
+  } else {
+      // The DMA write pointer has wrapped around the end of the buffer
+      return (RX_BUFFER_SIZE - ReadIndex) + writeIndex;
+  }
 }
 
-__attribute__((always_inline)) static inline bool SerialAvailable(void) {
-    return (SET == usart_flag_get(USART1, USART_FLAG_RBNE));
+__attribute__((always_inline)) static inline uint8_t SerialReadByte(void) {
+  uint8_t data = 0;
+  
+  // Only read if unread bytes exist
+  if (SerialAvailable() > 0) {
+      data = RxBuffer[ReadIndex];
+      ReadIndex++;
+      
+      // Wrap the read index if it hits the end of the array
+      if (ReadIndex >= RX_BUFFER_SIZE) {
+          ReadIndex = 0;
+      }
+  }
+  return data;
+}
+
+
+
+__attribute__((always_inline)) static inline void SerialWriteBuf(uint8_t *buf, uint8_t numbytes) {
+  if (numbytes == 0 || numbytes > TX_BUFFER_SIZE) return;
+
+    // Wait for any previous DMA transmission to finish safely
+    while (dma_transfer_number_get(DMA0, DMA_CH6) > 0) {
+        // Hardware is busy sending the previous block
+    }
+
+    // Disable channel to configure the new transfer
+    dma_channel_disable(DMA0, DMA_CH6);
+    
+    // Clear the full transfer finish flag
+    dma_flag_clear(DMA0, DMA_CH6, DMA_FLAG_FTF);
+
+    // Copy data to the dedicated DMA memory buffer
+    for (uint8_t count = 0; count < numbytes; count++) {
+        TxBuffer[count] = buf[count];
+    }
+
+    // Set the number of bytes and enable the DMA channel to start transmission
+    dma_transfer_number_config(DMA0, DMA_CH6, numbytes);
+    dma_channel_enable(DMA0, DMA_CH6);
 }
 
 __attribute__((always_inline)) static inline void SerialWriteByte(uint8_t data) {
-    while (RESET == usart_flag_get(USART1, USART_FLAG_TBE));
-    usart_data_transmit(USART1, (uint16_t)data);
-}
-
-__attribute__((always_inline)) static inline void SerialWriteBuf(uint8_t *buf, uint8_t numbytes) {
-    for (uint8_t count=0; count<numbytes; count++) {
-        SerialWriteByte((uint8_t)*buf);
-        buf += 1;
-    }
+  SerialWriteBuf(&data, 1);
 }
 
 
@@ -217,7 +264,145 @@ int HPSCGetMessageFromQueue(uint32_t ticks) {
 }
 
 
+void InitUsartDmaReceive() {
+  // Enable DMA0 clock since USART1 is on APB1
+  rcu_periph_clock_enable(RCU_DMA0);
+
+  // Deinitialize DMA0 Channel5
+  dma_deinit(DMA0, DMA_CH5);
+
+  dma_single_data_parameter_struct dmaInitStruct;
+  
+  // Configure the DMA transfer parameters
+  dmaInitStruct.periph_addr = (uint32_t)&USART_DATA(USART1);
+  dmaInitStruct.periph_inc = DMA_PERIPH_INCREASE_DISABLE;
+  dmaInitStruct.memory0_addr = (uint32_t)RxBuffer;
+  dmaInitStruct.memory_inc = DMA_MEMORY_INCREASE_ENABLE;
+  dmaInitStruct.periph_memory_width = DMA_PERIPH_WIDTH_8BIT;
+  dmaInitStruct.circular_mode = DMA_CIRCULAR_MODE_ENABLE;
+  dmaInitStruct.direction = DMA_PERIPH_TO_MEMORY;
+  dmaInitStruct.number = RX_BUFFER_SIZE;
+  dmaInitStruct.priority = DMA_PRIORITY_HIGH;
+  
+  // Apply configuration and map the USART1_RX subperipheral
+  dma_single_data_mode_init(DMA0, DMA_CH5, &dmaInitStruct);
+  dma_channel_subperipheral_select(DMA0, DMA_CH5, DMA_SUBPERI4);
+  
+  // Enable the DMA channel
+  dma_channel_enable(DMA0, DMA_CH5);
+
+  // Tell USART1 to issue DMA requests when bytes arrive using the correct macro
+  usart_dma_receive_config(USART1, USART_DENR_ENABLE);
+}
+
+
+
+void InitUsartDmaTransmit() {
+    // Enable DMA0 clock since USART1 is on APB1
+    rcu_periph_clock_enable(RCU_DMA0);
+
+    // Deinitialize DMA0 Channel6 (mapped to USART1 TX)
+    dma_deinit(DMA0, DMA_CH6);
+
+    dma_single_data_parameter_struct dmaInitStruct;
+    
+    // Configure the DMA transfer parameters for TX
+    dmaInitStruct.periph_addr = (uint32_t)&USART_DATA(USART1);
+    dmaInitStruct.periph_inc = DMA_PERIPH_INCREASE_DISABLE;
+    dmaInitStruct.memory0_addr = (uint32_t)TxBuffer;
+    dmaInitStruct.memory_inc = DMA_MEMORY_INCREASE_ENABLE;
+    dmaInitStruct.periph_memory_width = DMA_PERIPH_WIDTH_8BIT;
+    dmaInitStruct.circular_mode = DMA_CIRCULAR_MODE_DISABLE; // Normal mode for TX
+    dmaInitStruct.direction = DMA_MEMORY_TO_PERIPH;
+    dmaInitStruct.number = 0; 
+    dmaInitStruct.priority = DMA_PRIORITY_HIGH;
+    
+    // Apply configuration and map the USART1_TX subperipheral
+    dma_single_data_mode_init(DMA0, DMA_CH6, &dmaInitStruct);
+    dma_channel_subperipheral_select(DMA0, DMA_CH6, DMA_SUBPERI4);
+    
+    // Tell USART1 to issue DMA requests for transmission
+    usart_dma_transmit_config(USART1, USART_DENT_ENABLE);
+}
+
+
+
 bool HPSoundCardInitConnection() {
+  rcu_periph_clock_enable(RCU_GPIOA);
+  rcu_periph_clock_enable(RCU_USART1);
+
+  // Configure TX as AF, Push-Pull
+  gpio_af_set(GPIOA, GPIO_AF_7, GPIO_PIN_2);
+  gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO_PIN_2);
+  gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2);
+
+  // Configure RX as AF, Push-Pull
+  gpio_af_set(GPIOA, GPIO_AF_7, GPIO_PIN_3);
+  gpio_mode_set(GPIOA, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO_PIN_3);
+  gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3);
+
+  usart_deinit(USART1);
+  usart_baudrate_set(USART1, 57600U);
+  usart_word_length_set(USART1, USART_WL_8BIT);
+  usart_stop_bit_set(USART1, USART_STB_1BIT);
+  usart_parity_config(USART1, USART_PM_NONE);
+  
+  // Disable Hardware Flow Control
+  usart_hardware_flow_cts_config(USART1, USART_CTS_DISABLE);
+  usart_hardware_flow_rts_config(USART1, USART_RTS_DISABLE);
+  usart_receive_config(USART1, USART_RECEIVE_ENABLE);
+  usart_transmit_config(USART1, USART_TRANSMIT_ENABLE);
+
+  // Initialize the DMA for USART1 RX/TX before enabling the USART
+  InitUsartDmaReceive();
+  InitUsartDmaTransmit();
+
+  // Clear any lingering overrun errors or junk data before starting
+  usart_flag_clear(USART1, USART_FLAG_ORERR);
+  usart_data_receive(USART1); 
+
+  // Enable USART1
+  usart_enable(USART1);
+  
+  HPSCVerionRcvd = false;
+  
+  HPSCVerionRcvd = false;
+  HPSCVerion[0] = '\0';
+  HPSCSysinfoRcvd = false;
+
+  byte volumeIndex = RTC_BKP9 & HPSC_PRIMARY_VOLUME_MASK;
+  if (volumeIndex==0) volumeIndex = 10;
+  if (volumeIndex>31) volumeIndex = 20;        
+
+  HPSCMusicVolume = (RTC_BKP9 & HPSC_MUSIC_VOLUME_MASK)>>8;
+  HPSCSFXVolume = (RTC_BKP9 & HPSC_SFX_VOLUME_MASK)>>16;
+  HPSCCalloutsVolume = (RTC_BKP9 & HPSC_CALLOUTS_VOLUME_MASK)>>24;
+  if (HPSCMusicVolume>100) HPSCMusicVolume = 100;
+  if (HPSCSFXVolume>100) HPSCSFXVolume = 100;
+  if (HPSCCalloutsVolume>100) HPSCCalloutsVolume = 100;
+  if (HPSCMusicVolume<5) HPSCMusicVolume = 5;
+  if (HPSCSFXVolume<5) HPSCSFXVolume = 5;
+  if (HPSCCalloutsVolume<5) HPSCCalloutsVolume = 5;
+  
+  // put sanitized values back in RTC_BKP9
+  RTC_BKP9 = volumeIndex + (HPSCMusicVolume<<8) + (HPSCSFXVolume<<16) + (HPSCCalloutsVolume<<24);
+
+  HPSCClearReturnMessagesQueue();
+  HPSCPushMessageToQueue(20753100, 1);
+
+  // Flush and request version at the very end so DMA is ready to catch the reply
+  HPSoundCardFlush();
+  HPSoundCardStopAllTracks();
+  HPSoundCardSetReporting(true);
+  HPSoundCardMasterGain(HPSCGetGainFromLevel(volumeIndex));
+  HPSoundCardTrackPlayPoly(999); // startup bong
+  HPSoundCardRequestVersion();
+
+  return true;
+}
+
+
+bool HPSoundCardInitConnection1() {
     rcu_periph_clock_enable(RCU_GPIOA);
     rcu_periph_clock_enable(RCU_USART1);
 
@@ -244,31 +429,19 @@ bool HPSoundCardInitConnection() {
 
     /* Enable USART1 */
     usart_enable(USART1);
-
-    uint8_t txbuf[5];
+    InitUsartDmaReceive();
 
     HPSCVerionRcvd = false;
+    HPSCVerion[0] = '\0';
     HPSCSysinfoRcvd = false;
+
     HPSoundCardFlush();
-
-    // Request HPSCVerion string
-    txbuf[0] = SOM1;
-    txbuf[1] = SOM2;
-    txbuf[2] = 0x05;
-    txbuf[3] = CMD_GET_VERSION;
-    txbuf[4] = EOM;
-    SerialWriteBuf(txbuf, 5);
-
-    // Request system info
-    txbuf[0] = SOM1;
-    txbuf[1] = SOM2;
-    txbuf[2] = 0x05;
-    txbuf[3] = CMD_GET_SYS_INFO;
-    txbuf[4] = EOM;
-    SerialWriteBuf(txbuf, 5);  
-
     HPSoundCardStopAllTracks();
+    HPSoundCardSetReporting(true);
+    HPSoundCardRequestVersion();
+
     byte volumeIndex = RTC_BKP9 & HPSC_PRIMARY_VOLUME_MASK;
+    if (volumeIndex==0) volumeIndex = 10;
     if (volumeIndex>31) volumeIndex = 20;        
 
     HPSCMusicVolume = (RTC_BKP9 & HPSC_MUSIC_VOLUME_MASK)>>8;
@@ -290,6 +463,14 @@ bool HPSoundCardInitConnection() {
     HPSoundCardTrackPlayPoly(999); // startup bong
     return true;
 }
+
+bool HPSoundCardPresent() {
+  return HPSCVerionRcvd;
+}
+char *HPSoundCardVersion() {
+  return HPSCVerion;
+}
+
 
 
 void HPSoundCardFlush(void) {
@@ -618,6 +799,26 @@ void HPSoundCardSetAmpPwr(bool enable) {
   txbuf[4] = enable;
   txbuf[5] = EOM;
   SerialWriteBuf(txbuf, 6);
+}
+
+
+void HPSoundCardRequestVersion() {
+  uint8_t txbuf[5];
+  // Request HPSCVerion string
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_GET_VERSION;
+  txbuf[4] = EOM;
+  SerialWriteBuf(txbuf, 5);
+
+  // Request system info
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x05;
+  txbuf[3] = CMD_GET_SYS_INFO;
+  txbuf[4] = EOM;
+  SerialWriteBuf(txbuf, 5);
 }
 
 

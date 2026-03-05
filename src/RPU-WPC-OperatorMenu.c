@@ -4,26 +4,32 @@
 #include "RPU-WPC-Display.h"
 #include "GameStateAttributes.h"
 #include "gd32f4xx.h"
+#include "HPSDCardReader.h"
 
 uint8_t RPUWPCMenuPage = 0;
 uint8_t RPUWPCLastMenuPage = 0xFF;
 uint8_t RPUWPCSubMenuPage = 0;
 uint8_t RPUWPCLastSubMenuPage = 0xFF;
 uint8_t RPUWPCVolumeChange = 1;
-
 uint8_t RPUWPCLastCabinetInput = 0;
+
 uint32_t RPUWPCLastCabinetInputTicks = 0;
 uint32_t RPUWPCMenuStartTicks = 0;
 uint32_t RPUWPCMenuPageChangeTicks = 0;
 uint32_t RPUWPCSettingChangeStartTicks = 0;
 
+static uint8_t ROMFlashResult = 0xFF;
 static uint16_t TotalRAMAttributes = 0;
 static uint16_t CurrentRAMAttribute = 0;
 static uint16_t LastRAMAttribute = 0xFFFF;
+static uint16_t NumFilesOnSDCard = 0;
+
+static char SDCardFileList[10][13];
 
 uint32_t RPUWPCCurrentTicks = 0;
 bool RPUWPCAnimationRunning = false;
 bool RPUWPCSubItemChanged = false;
+bool RPUWPC_ROMChanged = false;
 
 // Menu pages
 // 0 - landing, enter or exit
@@ -47,6 +53,43 @@ bool RPUWPCSubItemChanged = false;
 
 #define CABINET_BUTTON_DEBOUNCE_TICKS   200000U
 
+void DrawRectangle(int offset, bool filled) {
+    if (offset>15) return;
+
+    if (!filled) {   
+        for (int count=offset; count<(512-offset*2); count++) {
+            RPU_WPC_DisplayDrawPixel(count, offset, 1);
+            RPU_WPC_DisplayDrawPixel(count, 31-offset, 1);
+            if (count<(32-offset*2)) {
+                RPU_WPC_DisplayDrawPixel(offset, count, 1);
+                RPU_WPC_DisplayDrawPixel(127-offset, count, 1);
+            }
+        }
+    } else {
+        for (int count=offset; count<(512-offset*2); count++) {
+            for (int row=offset; row<(32-offset); row++) {
+                RPU_WPC_DisplayDrawPixel(count, row, 1);
+            }
+        }
+    }
+}
+
+void DrawRectangleXY(int x, int y, int width, int height, bool filled) {
+
+    for (int col=x; col<(x+width); col++) {
+        for (int row=y; row<(y+height); row++) {
+            if (filled) {
+                RPU_WPC_DisplayDrawPixel(col, row, 1);
+            } else {
+                if (row==y || row==(y+height-1) || col==0 || col==(x+width-1)) {
+                    RPU_WPC_DisplayDrawPixel(col, row, 1);
+                }
+            }
+        }
+    }
+
+}
+
 
 void RPU_WPC_SetupPorts() {
     // Turn on blanking
@@ -64,11 +107,14 @@ void RPU_WPC_SetupPorts() {
     // Turn off flipper relay and GI
 }
 
-bool RPU_WPC_CheckForMenuRequest() {
+bool RPU_WPC_CheckForMenuRequest(bool readFromPort) {
     // If the operator presses both + and - during
     // boot, we'll assume they want to enter the
     // special boot menu
-    byte cabInput = MPUHardwareRead(WPC_SWITCH_CABINET_INPUT);
+
+    byte cabInput = 0;
+    if (readFromPort) cabInput = MPUHardwareRead(WPC_SWITCH_CABINET_INPUT);
+    else cabInput = ASICReadLastCabinetInput();
     if ((cabInput & 0x60)==0x60) {
         return true;
     }
@@ -89,6 +135,34 @@ void ChangeRelativeVolume(int volToChange, int changeAmount) {
     RTC_BKP9 |= (outgoingVol<<(8*volToChange));
 }
 
+
+void FlashProgressCallback(uint32_t currentBytes, uint32_t totalBytes, uint8_t isErasing) {
+    char buf[128];
+    RPU_WPC_DisplayClearScratchBuffer();
+    snprintf(buf, 128, "    LOAD NEW ROM");
+    RPU_WPC_DrawTextToScratch((const char *)buf);
+    int progress = (currentBytes*100/totalBytes);
+
+    if (isErasing) {
+        snprintf(buf, 128, "Erasing");
+        RPU_WPC_DrawTextToScratchXY((const char *)buf, 0, 14);
+        DrawRectangleXY(48, 14, 79, 7, false);
+        DrawRectangleXY(48, 14, 79*progress/100, 7, true);
+    } else {
+        snprintf(buf, 128, "Writing");
+        RPU_WPC_DrawTextToScratchXY((const char *)buf, 0, 14);
+        DrawRectangleXY(48, 14, 79, 7, false);
+        DrawRectangleXY(48, 14, 79*progress/100, 7, true);
+    }
+
+
+    snprintf(buf, 128, "%s", SDCardFileList[RPUWPCSubMenuPage-1]);
+    RPU_WPC_DrawTextToScratchXY((const char *)buf, 0, 22);
+    RPU_WPC_DisplayUpdateBackBuffer();
+    RPU_WPC_DisplayFlipBackToFront();
+}
+
+
 // animation directions
 // -1 / 1 = left / right
 // -2 / 2 = up / down 
@@ -99,7 +173,24 @@ void RPU_WPC_HandleAdjustment(uint8_t cabinetInput) {
         // the only input that makes sense is 
         // the enter (escape is handled before we get here)
         if (cabinetInput&RPU_WPC_CABINET_ENTER_BUTTON) {
+
             RPUWPCSettingChangeStartTicks = RPUWPCCurrentTicks;
+            ROMFlashResult = 0;
+            uint32_t newFileSize = HPSDFlashRomFromSD((const char *)SDCardFileList[RPUWPCSubMenuPage-1], FlashProgressCallback);
+            if (newFileSize) {
+                HPSDUpdateRomMetadata((const char *)SDCardFileList[RPUWPCSubMenuPage-1], newFileSize);
+                ROMFlashResult = 1;
+                RPUWPC_ROMChanged = true;
+            }
+            RPUWPCSubItemChanged = true;
+        } else if (cabinetInput&RPU_WPC_CABINET_PLUS_BUTTON) {
+            RPUWPCSubMenuPage += 1;
+            if (RPUWPCSubMenuPage>NumFilesOnSDCard) RPUWPCSubMenuPage = 1;
+            AnimationDirection = -1;
+        } else if (cabinetInput&RPU_WPC_CABINET_MINUS_BUTTON) {
+            RPUWPCSubMenuPage -= 1;
+            if (RPUWPCSubMenuPage==0) RPUWPCSubMenuPage = NumFilesOnSDCard;
+            AnimationDirection = 1;
         }
     } else if (RPUWPCMenuPage==RPU_WPC_ACHIEVEMENTS_MENU) {
         if (cabinetInput&RPU_WPC_CABINET_PLUS_BUTTON) {
@@ -172,6 +263,8 @@ void RPU_WPC_NavigateMenu(uint8_t cabinetInput) {
                 if (RPUWPCMenuPage==RPU_WPC_ACHIEVEMENTS_MENU) {
                     CurrentRAMAttribute = 0;
                     LastRAMAttribute = 0xFFFF;
+                } else if (RPUWPCMenuPage==RPU_WPC_LOAD_ROM_MENU) {
+                    ROMFlashResult = 0xFF;
                 } else if (RPUWPCMenuPage==RPU_WPC_VOLUME_MENU) {
                     RPUWPCVolumeChange = 1;
                 }
@@ -211,17 +304,6 @@ bool UpdateAnimation(uint32_t elapsedTicks) {
     return RPUWPCAnimationRunning;
 }
 
-void DrawRectangle(int offset) {
-    if (offset>15) return;
-    for (int count=offset; count<(512-offset*2); count++) {
-        RPU_WPC_DisplayDrawPixel(count+offset, offset, 1);
-        RPU_WPC_DisplayDrawPixel(count+offset, 31-offset, 1);
-        if (count<(32-offset*2)) {
-            RPU_WPC_DisplayDrawPixel(offset, count+offset, 1);
-            RPU_WPC_DisplayDrawPixel(127-offset, count+offset, 1);
-        }
-    }
-}
 
 // Menu pages
 // 0 - landing, enter or exit
@@ -237,12 +319,19 @@ void RPU_WPC_DrawSubMenuPage() {
     RPUWPCSubItemChanged = false;
     
     if (RPUWPCMenuPage==RPU_WPC_LOAD_ROM_MENU) {
-        // There's only one sub menu, and it's 
-        // for loading the ROM
-        snprintf(buf, 128, "    LOAD NEW ROM");
-        RPU_WPC_DrawTextToScratch((const char *)buf);
-        snprintf(buf, 128, "(not yet\n implemented)");
-        RPU_WPC_DrawTextToScratchXY((const char *)buf, 20, 14);
+        if (ROMFlashResult==0xFF) {
+            snprintf(buf, 128, "    LOAD NEW ROM");
+            RPU_WPC_DrawTextToScratch((const char *)buf);
+            snprintf(buf, 128, "Press enter to load:\n%s", SDCardFileList[RPUWPCSubMenuPage-1]);
+            RPU_WPC_DrawTextToScratchXY((const char *)buf, 0, 14);
+        } else {
+            snprintf(buf, 128, "    LOAD NEW ROM");
+            RPU_WPC_DrawTextToScratch((const char *)buf);
+            if (ROMFlashResult==0) snprintf(buf, 128, "ROM flash failed");
+            else if (ROMFlashResult==1) snprintf(buf, 128, "ROM flash successful");
+            else snprintf(buf, 128, "ROM flash result\n    uknown");
+            RPU_WPC_DrawTextToScratchXY((const char *)buf, 0, 14);
+        }
     } else if (RPUWPCMenuPage==RPU_WPC_LOAD_SETTINGS_MENU) {
         snprintf(buf, 128, "    LOAD SETTINGS");
         RPU_WPC_DrawTextToScratch((const char *)buf);
@@ -297,11 +386,22 @@ void RPU_WPC_DrawMenuPage() {
     
     char buf[128];
     RPU_WPC_DisplayClearScratchBuffer();
-    DrawRectangle(0);
+    DrawRectangle(0, false);
     if (RPUWPCMenuPage==RPU_WPC_LOAD_ROM_MENU) {
         snprintf(buf, 128, "    LOAD NEW ROM");
         RPU_WPC_DrawTextToScratch((const char *)buf);
-        snprintf(buf, 128, "Press Enter to load:\n(no card found)");
+        if (!HPSDCardInserted()) {
+            snprintf(buf, 128, "\n   (no card found)");
+            NumFilesOnSDCard = 0;
+        } else {
+            uint16_t numFiles = HPSDCardGetFileNames(SDCardFileList, 10, "rom");
+            NumFilesOnSDCard = numFiles;
+            if (numFiles) {
+                snprintf(buf, 128, "    %d ROMs found\n%s", numFiles, (numFiles>1)?"  (enter to choose)" : "");
+            } else {
+                snprintf(buf, 128, "  No files found on\n      SD card");
+            }
+        }
         RPU_WPC_DrawTextToScratchXY((const char *)buf, 3, 14);
     } else if (RPUWPCMenuPage==RPU_WPC_LOAD_SETTINGS_MENU) {
         snprintf(buf, 128, "LOAD / SAVE SETTINGS");
@@ -339,11 +439,12 @@ bool RPU_WPC_Menu(uint32_t curTicks) {
             // Parse the attributes
             GameStateAttributes_Parse();
             TotalRAMAttributes = GameStateAttributes_GetAttributeCount();
+            RPUWPC_ROMChanged = false;
 
             RPU_WPC_DisplayClearScratchBuffer();
             RPU_WPC_DrawTextToScratch((const char *)"    HOMEPIN MENU\nPress Escape to boot or Enter to adjust");
-            DrawRectangle(0);
-            DrawRectangle(1);
+            DrawRectangle(0, false);
+            DrawRectangle(1, false);
             if (RPUWPCLastMenuPage==0xFF) {
                 RPU_WPC_DisplayUpdateBackBuffer();        
                 RPU_WPC_DisplayFlipBackToFront();
@@ -388,4 +489,11 @@ bool RPU_WPC_Menu(uint32_t curTicks) {
     }
 
     return true;
+}
+
+
+bool RPU_WPC_MenuRequiresReset() {
+    bool romWasChanged = RPUWPC_ROMChanged;
+    RPUWPC_ROMChanged = false;
+    return romWasChanged;
 }

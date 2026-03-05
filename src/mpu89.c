@@ -17,6 +17,7 @@ byte DisplayActivePage = 0;
 byte DisplayNextActivePage = 0;
 byte DisplayScanlineTrigger = 31;
 byte DisplayCurrentScanline = 0;
+bool UseLegacySoundCard = false;
 bool DisplayHighPageNeedsOverride = false;
 int memoryWrites;
 int protectedMemoryWriteAttempts = 0;
@@ -29,8 +30,103 @@ uint32_t UpperAddressMask = 0x00000000;
 #ifndef MPU89_BUILD_FOR_COMPUTER
 #include "gd32f4xx.h"
 
+
+void MCUPortInit() {
+    rcu_periph_clock_enable(RCU_GPIOA);
+    rcu_periph_clock_enable(RCU_GPIOB);
+    rcu_periph_clock_enable(RCU_GPIOC);
+    rcu_periph_clock_enable(RCU_GPIOD);
+    rcu_periph_clock_enable(RCU_GPIOE);
+
+    // ========================================================================
+    // PORT A
+    // ========================================================================
+    // WDEN (PA6): Push-Pull Output, Initial=1    
+    // IOEN (PA7): Push-Pull Output, Initial=1    
+    // IO (PA8): Push-Pull Output, Initial=1    
+    uint32_t pa_pp_pins = GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
+    gpio_bit_set(GPIOA, pa_pp_pins);
+    gpio_output_options_set(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pa_pp_pins);
+    gpio_mode_set(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pa_pp_pins);
+
+    // SDIO_CD (PA15): Input (GPIO_PUPD_NONE)
+    gpio_mode_set(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_15);
+
+    // ========================================================================
+    // PORT B
+    // ========================================================================
+    // RW (PB2): Push-Pull Output, Initial=1
+    // DREN (PB4): Push-Pull Output, Initial=1
+    // RESET (PB5): Push-Pull Output, Initial=1
+    // DISEN (PB13): Push-Pull Output, Initial=1
+    // LAMPRow (PB15): Push-Pull Output, Initial = 1 (should be OD but this works cleaner signal-wise)
+    uint32_t pb_pp_pins = GPIO_PIN_2 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_13 | GPIO_PIN_15;
+    gpio_bit_set(GPIOB, pb_pp_pins);
+    gpio_output_options_set(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pb_pp_pins);
+    gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_pp_pins);
+
+    // TRIAC (PB3): Open Drain Output, Initial=1
+    // DIS1 (PB8): Open Drain Output, Initial=1
+    // DIS2 (PB9): Open Drain Output, Initial=1
+    // DIS3 (PB10): Open Drain Output, Initial=1
+    // DIS4 (PB11): Open Drain Output, Initial=1
+    // DISStrobe (PB12): Open Drain Output, Initial=1
+    // LAMPCol (PB14): Open Drain Output, Initial=1    
+    uint32_t pb_od_pins = GPIO_PIN_3 | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | 
+    GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_14;
+    gpio_bit_set(GPIOB, pb_od_pins);
+    gpio_output_options_set(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pb_od_pins);
+    gpio_mode_set(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pb_od_pins);
+
+    // IRQ (PB0): Input (GPIO_PUPD_NONE)
+    // FIRQ (PB1): Input (GPIO_PUPD_NONE)
+    uint32_t pb_input_pins = GPIO_PIN_0 | GPIO_PIN_1;
+    gpio_mode_set(GPIOB, GPIO_MODE_INPUT, GPIO_PUPD_NONE, pb_input_pins);
+
+    // ========================================================================
+    // PORT C 
+    // ========================================================================
+    // We should configure the SD card pins here
+
+    // SOL1-4 (PC4, PC5, PC6, PC7): Open Drain Outputs
+    // Initial=1
+    uint32_t pc_od_pins = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+    gpio_bit_set(GPIOC, pc_od_pins);
+    gpio_output_options_set(GPIOC, GPIO_OTYPE_OD, GPIO_OSPEED_50MHZ, pc_od_pins);
+    gpio_mode_set(GPIOC, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pc_od_pins);
+
+    // ========================================================================
+    // PORT D
+    // ========================================================================
+    // E (PD0): Push-Pull Output, Initial = 1
+    // Q (PD1): Push-Pull Output, Initial = 1
+    // SDIO_CMD: Push-Pull Output, Initial = 1
+    // AddressBus (PD3-PD15): Push-Pull Outputs, Initial=0x1FFF
+    gpio_bit_set(GPIOD, GPIO_PIN_ALL);
+    gpio_output_options_set(GPIOD, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_ALL);
+    gpio_mode_set(GPIOD, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_ALL);
+
+    // ========================================================================
+    // PORT E
+    // ========================================================================
+    // Inputs: DataBus (PE0-PE7), WDD (PE12), ZC (PE15)
+    gpio_mode_set(GPIOE, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | 
+                  GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_12 | GPIO_PIN_15);
+  
+    // Push-Pull Outputs: SWJMP (PE8), SWROW (PE10), SWDIR (PE11), Blank (PE13)
+    // Initial=1
+    gpio_bit_set(GPIOE, GPIO_PIN_8 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13);
+  
+    // SWCOL (PE9): Initial=0
+    gpio_bit_reset(GPIOE, GPIO_PIN_9);
+  
+    uint32_t pe_pp_pins = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_13;
+    gpio_output_options_set(GPIOE, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pe_pp_pins);
+    gpio_mode_set(GPIOE, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pe_pp_pins);    
+}
+
+/*
 void MCUPortInit(void) {
-  /* 1. Enable all necessary GPIO Clocks */
   rcu_periph_clock_enable(RCU_GPIOA);
   rcu_periph_clock_enable(RCU_GPIOB);
   rcu_periph_clock_enable(RCU_GPIOC);
@@ -114,6 +210,8 @@ void MCUPortInit(void) {
   gpio_output_options_set(GPIOE, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, pe_pp_pins);
   gpio_mode_set(GPIOE, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, pe_pp_pins);
 }
+
+*/
 #endif
 
 
@@ -146,9 +244,15 @@ bool MPUInit() {
   UpperAddressMask = 0x00000000;
   ROM = NULL;
   ROMSize = 0;
+  UseLegacySoundCard = false;
 
   return true;
 }
+
+void MPUUseLegacySoundCard(bool useLegacy) {
+  UseLegacySoundCard = useLegacy;
+}
+
 
 void MPURelease() {
 }
@@ -279,37 +383,9 @@ byte MPURead8(unsigned short offset) {
 }
 
 void MPUWrite8(unsigned short offset, byte value) {
-//  value &= 0xFF;
-
   if (offset<=RAM1_UPPER_ADDRESS) RAM[offset] = value;
   else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) RAM[offset] = value;
   else if (offset<=HARDWARE_UPPER_ADDRESS) MPUHardwareWrite(offset, value);
-
-/*  
-  if (offset==0x1803) {
-    volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
-    volatile uint8_t month = RAM[0x1802];
-    volatile uint8_t day = RAM[0x1803];
-    volatile uint8_t dow = RAM[0x1804];
-    volatile uint8_t hour = RAM[0x1805];
-    volatile uint8_t valid = RAM[0x1806];
-    volatile uint8_t checksumTime = RAM[0x1807];
-    volatile uint8_t checksumDate = RAM[0x1808];
-    if (day!=9) {
-      RAM[0x3001] = hour;
-    }
-    (void)year;
-    (void)month;
-    (void)day;
-    (void)dow;
-    (void)hour;
-    (void)valid;
-    (void)checksumTime;
-    (void)checksumDate;
-  }
-*/    
-
-
 }
 
 byte MPUBankswitchedRead(unsigned int offset) {
@@ -322,6 +398,91 @@ byte MPUBankswitchedRead(unsigned int offset) {
 }
 
 
+__attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t data) {
+  // 1. Setup Phase (Bus is idle, Transceiver is off)
+  SetAddressBus(WPCS_DATA);
+  SetDataBus(data);
+  SetDataBusDirection(true);
+
+  // 2. Wait for the "Safe Zone"
+  // We wait for E to go LOW ( !E is HIGH ). 
+  // This is the period where the RAM is NOT listening.
+  while (ReadESignal()); 
+  DelayQuarterCycle();
+
+  // 3. Prepare the Transceiver
+  // We set RW and Enable the 4245 while the RAM window is closed.
+  SetRWLow();  // RW Low
+  SetIOENLow();
+  SetWDENLow(); // WDEN low alerts cards on single ribbon cable
+  
+  // 5. Trigger the Hardware Write
+  // Now we wait for E to go HIGH ( !E goes LOW ).
+  // The moment this happens, the OR gate (U19A) output drops.
+  // !WE goes LOW. The RAM starts its write.
+  while (!ReadESignal()); 
+  DelayQuarterCycle();
+  
+  // 6. Stability Window
+  // The RAM is now in its transparent write state. 
+  // We stay here for a moment to ensure the signal is rock solid.
+  __NOP(); __NOP(); __NOP(); __NOP();
+
+  // 7. The Hardware Latch
+  // We wait for E to go LOW ( !E goes HIGH ).
+  // This hardware edge physically ENDS the write and latches the data.
+  // The 4245 is still actively driving the bus.
+  while (ReadESignal());
+  DelayQuarterCycle();
+  
+  // 8. Data Hold & Cleanup
+  // The write is over. We wait a tiny bit to satisfy RAM hold times
+  // before we "let go" of the bus.
+  __NOP(); __NOP(); __NOP(); 
+  
+  SetWDENHigh();    
+  SetIOENHigh();
+  SetRWHigh();    // RW High (Return to Read/Idle)
+}
+
+__attribute__((always_inline)) static inline uint8_t ReadLegacySoundCard(uint16_t address) {
+  uint8_t result;
+
+  SetAddressBus(address);    
+  // 2. Prepare for Read: Set Port E to Input (High-Z)
+  SetDataBusDirection(false); 
+  
+  // Set RW High (Read Mode)
+  SetRWHigh();
+  // Set IOEN line Low
+  SetIOENLow();
+
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+
+  SetWDENLow();
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+  DelayQuarterCycle();
+
+  // Grab the data now while the board is still driving the bus
+  result = ReadDataBus();
+
+  // 7. Cleanup: Disable external hardware BEFORE restoring outputs
+  SetWDENHigh();  // IO High
+  SetIOENHigh();
+  SetRWLow();   // Restore RW to Write (Default)
+
+  // 8. Safety: Give external hardware ~15ns to Hi-Z its buffers
+  DelayQuarterCycle();
+
+  // Restore Data Bus to Output
+  SetDataBusDirection(true);
+
+  return result;
+}
+
 
 __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
   // 1. Setup Phase (Bus is idle, Transceiver is off)
@@ -333,22 +494,24 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
   // We wait for E to go LOW ( !E is HIGH ). 
   // This is the period where the RAM is NOT listening.
   while (ReadESignal()); 
+  DelayQuarterCycle();
 
   // 3. Prepare the Transceiver
   // We set RW and Enable the 4245 while the RAM window is closed.
-  GPIO_BC(GPIOB) = (1U << 2); // RW Low
-  GPIO_BC(GPIOC) = (1U << 9); // IOEN Low
+  SetRWLow();  // RW Low
+  SetIOENLow();
   
   // 4. Arm the !AddressValid (PORT)
   // We drop IO now. !WE is still HIGH because !E is still HIGH.
-  GPIO_BC(GPIOA) = (1U << 8); // IO Low
+  SetIOLow(); // IO Low
   
   // 5. Trigger the Hardware Write
   // Now we wait for E to go HIGH ( !E goes LOW ).
   // The moment this happens, the OR gate (U19A) output drops.
   // !WE goes LOW. The RAM starts its write.
   while (!ReadESignal()); 
-
+  DelayQuarterCycle();
+  
   // 6. Stability Window
   // The RAM is now in its transparent write state. 
   // We stay here for a moment to ensure the signal is rock solid.
@@ -359,15 +522,16 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
   // This hardware edge physically ENDS the write and latches the data.
   // The 4245 is still actively driving the bus.
   while (ReadESignal());
-
+  DelayQuarterCycle();
+  
   // 8. Data Hold & Cleanup
   // The write is over. We wait a tiny bit to satisfy RAM hold times
   // before we "let go" of the bus.
   __NOP(); __NOP(); __NOP(); 
   
-  GPIO_BOP(GPIOA) = (1U << 8); // IO High (!AddressValid released)
-  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High (4245 Tri-state)
-  GPIO_BOP(GPIOB) = (1U << 2); // RW High (Return to Read/Idle)
+  SetIOHigh();    // IO High (!AddressValid released)
+  SetIOENHigh();
+  SetRWHigh();    // RW High (Return to Read/Idle)
 }
 
 
@@ -378,7 +542,11 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     if (offset==WPCS_DATA) {
-      HPSoundCardHandleCommand(value, elapsedTicks);
+      if (!UseLegacySoundCard) {
+        HPSoundCardHandleCommand(value, elapsedTicks);
+      } else {
+        WriteLegacySoundCard(value);
+      }
       return;
     }
     ASICWrite(offset, value);
@@ -432,16 +600,16 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   SetDataBusDirection(false); 
   
   // Set RW High (Read Mode)
-  GPIO_BOP(GPIOB) = (1U << 2);
+  SetRWHigh();
   // Set IOEN line Low
-  GPIO_BC(GPIOC) = (1U << 9);
+  SetIOENLow();
 
   DelayQuarterCycle();
   DelayQuarterCycle();
   DelayQuarterCycle();
 
   // 4. Trigger: Drop IO to enable the DMD address decoder
-  GPIO_BC(GPIOA) = (1U << 8);
+  SetIOLow();
   DelayQuarterCycle();
   DelayQuarterCycle();
   DelayQuarterCycle();
@@ -450,9 +618,9 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   result = ReadDataBus();
 
   // 7. Cleanup: Disable external hardware BEFORE restoring outputs
-  GPIO_BOP(GPIOA) = (1U << 8); // IO High
-  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High
-  GPIO_BC(GPIOB) = (1U << 2);  // Restore RW to Write (Default)
+  SetIOHigh();  // IO High
+  SetIOENHigh();
+  SetRWLow();   // Restore RW to Write (Default)
 
   // 8. Safety: Give external hardware ~15ns to Hi-Z its buffers
   DelayQuarterCycle();
@@ -468,146 +636,85 @@ __attribute__((always_inline)) static inline uint8_t ReadDisplay1(uint16_t addre
 
   // 1. Setup Phase
   SetAddressBus(address);    
-  SetDataBusDirection(false); // MCU pins to Input (High-Z)
+  SetDataBusDirection(false); 
+  
+  // 2. Initiate Read Mode
+  SetRWHigh();
+  
+  // Wait for RW to physically cross the logic threshold
+  DelayQuarterCycle(); 
+  DelayQuarterCycle();
 
-  // 2. Prepare the Path
-  // Set RW High (Read Mode) and Enable Transceiver (B <- A)
-  GPIO_BOP(GPIOB) = (1U << 2);
-  GPIO_BC(GPIOC) = (1U << 9);
+  SetIOENLow();
 
-  // 3. Wait for the "Safe Zone" (E Low / !E High)
-  // We wait for the inactive phase of the clock to "arm" the PORT signal.
+  // Wait for the Safe Zone (E is Low)
   while (ReadESignal()); 
+  
+  // Now it is safe to drop PORT 
+  SetIOLow();
 
-  // 4. Present PORT
-  // Drop IO to enable the DMD address decoder. 
-  // Data won't hit the bus yet because !E is still High.
-  GPIO_BC(GPIOA) = (1U << 8);
-
-  // 5. Hardware Trigger (Wait for E High / !E Low)
-  // The moment E goes High, the !WE/OE logic on the peripheral 
-  // opens up and the RAM/Buffers start driving the bus.
+  // Hardware Trigger (E goes High)
   while (!ReadESignal()); 
+  
+  // Wait for 245 gate propagation 
+  DelayQuarterCycle(); 
 
-  // 6. Propagation Delay
-  // Give the data time to travel from the RAM through the 74LS245 
-  // and the 4245 to your MCU pins.
-  __NOP(); __NOP(); __NOP(); __NOP();
-
-  // 7. Sample the Bus
-  // Grab the data while E is solidly High and the bus is driven.
+  // Sample the bus
   result = ReadDataBus();
 
-  // 8. Wait for Hardware Latch/End (Wait for E Low / !E High)
-  // This ensures we don't "let go" while the peripheral still thinks 
-  // a valid cycle is happening.
+  // Wait for E to go Low (End of cycle)
   while (ReadESignal());
+  
+  // 3. Initiate Deselect
+  SetIOHigh();  
+  SetIOENHigh();
+  
+  // 4. THE FIX: Match WriteDisplay idle state.
+  // Leave RW High so the 245 cannot drive floating 0xFFs into the RAM.
+  SetRWHigh();  
 
-  // 9. Cleanup
-  GPIO_BOP(GPIOA) = (1U << 8); // IO High
-  GPIO_BOP(GPIOC) = (1U << 9); // IOEN High
-  GPIO_BC(GPIOB) = (1U << 2);  // Restore RW to Write (Default)
-
-  // 10. Turnaround Safety
-  // Small delay to ensure peripheral buffers are High-Z before MCU drives again.
+  // Turnaround Safety
   __NOP(); __NOP(); 
   SetDataBusDirection(true);
 
-  return result;
+  return result;  
 }
 
-
-
-/*
-__attribute__((always_inline)) static inline uint8_t ReadDisplay(uint16_t address) {
-    uint8_t result;
-
-    // 1. Setup Address
-    SetAddressBus(address);
-    
-    // 2. PREPARE FOR READ
-    // Switch Data Bus to Input (High-Z) so we don't fight the RAM
-    SetDataBusDirection(false); 
-    
-    // Set RW High (Read Mode) - PB2
-    GPIO_BOP(GPIOB) = (1U << 2);
-
-    // 3. Select the Board
-    // Set IO line Low (Active)
-    GPIO_BC(GPIOA) = (1U << 8);
-    // Set IOEN line Low (Active)
-    GPIO_BC(GPIOC) = (1U << 9);
-
-    // ------------------------------------------------------
-    // THE INVERTED READ PULSE
-    // ------------------------------------------------------
-
-    // 4. Drop Q (PC1) - Start of Cycle
-    GPIO_BC(GPIOC) = (1U << 1);
-    DelayQuarterCycle(); 
-
-    // 5. Drop E (PC0) - Enable
-    // The Display Board sees E go Active and puts data on the bus
-    GPIO_BC(GPIOC) = (1U << 0);
-    DelayQuarterCycle(); 
-
-    // 6. Raise Q (PC1)
-    GPIO_BOP(GPIOC) = (1U << 1);
-    
-   // Give a tiny bit more time for the external hardware to finish its 
-    // internal logic now that Q has transitioned.
-    DelayQuarterCycle();
-
-    // CRITICAL: SAMPLE DATA NOW
-    // We sample right at the end of the E pulse to give the hardware 
-    // the maximum access time to stabilize the bus.
-    result = ReadDataBus();
-    
-    // 7. Raise E (PC0) - End of Cycle
-    // The Display Board stops driving the bus here
-    GPIO_BOP(GPIOC) = (1U << 0);
-
-    // ------------------------------------------------------
-
-    // 8. Cleanup & Restore Defaults
-    // Release IO/IOEN (High)
-    GPIO_BOP(GPIOA) = (1U << 8);
-    GPIO_BOP(GPIOC) = (1U << 9);
-
-    // Restore RW to Low (Write default)
-    GPIO_BC(GPIOB) = (1U << 2);
-
-    // WAIT for the external chip to actually let go of the bus (Hi-Z)
-    // before we start driving it again.
-    DelayQuarterCycle();
-
-    // Restore Data Bus to Output (Default state)
-    SetDataBusDirection(true);
-
-    return result;
-}
-*/
 
 
 byte MPUHardwareRead(unsigned int offset) {
 
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     if (offset==WPCS_CONTROL_STATUS) {
-      if (HPSoundCardCheckForOutboundByte(elapsedTicks)) return 0x01;
-      else return 0x00;
+      if (!UseLegacySoundCard) {
+        if (HPSoundCardCheckForOutboundByte(elapsedTicks)) return 0x01;
+        else return 0x00;
+      } else {
+        return ReadLegacySoundCard(offset);
+      }
     } else if (offset==WPCS_DATA) {
-      return HPSoundCardGetOutboundByte();
+      if (!UseLegacySoundCard) {
+        return HPSoundCardGetOutboundByte();
+      } else {
+        return ReadLegacySoundCard(offset);
+      }
     }
     return ASICRead(offset);
   }
 
   if (offset>=DISPLAY_RAM_LOWER_PAGE_START && offset<=DISPLAY_RAM_LOWER_PAGE_END) {
-    // For Display Readds we use shadow Display RAM
+    // For Display Reads we use shadow Display RAM
     // so we don't have to hit the bus
+    if (!DisplayUseShadowVariables) {
+//      return ReadDisplay1(offset);
+    }
     return DisplayLowPageStartAddress[offset-0x3800];
   } else if (offset>=DISPLAY_RAM_UPPER_PAGE_START && offset<=DISPLAY_RAM_UPPER_PAGE_END) {
-    // For Display Readds we use shadow Display RAM
+    // For Display Reads we use shadow Display RAM
     // so we don't have to hit the bus
+    if (!DisplayUseShadowVariables) {
+//      return ReadDisplay1(offset);
+    }
     return DisplayHighPageStartAddress[offset-0x3A00];
   } else if (offset==WPC_DMD_LOW_PAGE) {
     if (!DisplayUseShadowVariables) {

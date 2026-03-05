@@ -35,6 +35,7 @@ bool ASIC_firqSourceDmd;
 int ASICIrqCountGI;
 uint8_t ASICZeroCrossFlag;
 int ASICTicksZeroCross;
+bool ASICUseSoftwareZC = false;
 uint8_t ASICMemoryProtectionMask;
 
 int64_t ASICMidnightMadnessMode;
@@ -188,6 +189,11 @@ void ASICReset(bool turnOnBlanking) {
     ASICCabinetSwitches = 0;
 }
 
+void ASICUseSoftwareZeroCross(bool useSWZC) {
+    ASICUseSoftwareZC = useSWZC;
+}
+
+
 uint8_t ASICGetRomBank() {
     return ASICRomBank;
 }
@@ -238,9 +244,11 @@ uint8_t ASICGetDipSwitchByte() {
 
 void ASICExecuteCycle(int ticksExecuted) {
     ASICTicksZeroCross += ticksExecuted;
-    if (ASICTicksZeroCross >= CALL_ZEROCLEAR_AFTER_TICKS) {
-        ASICTicksZeroCross -= CALL_ZEROCLEAR_AFTER_TICKS;
-        ASICSetZeroCrossFlag();
+    if (ASICUseSoftwareZC) {
+        if (ASICTicksZeroCross >= CALL_ZEROCLEAR_AFTER_TICKS) {
+            ASICTicksZeroCross -= CALL_ZEROCLEAR_AFTER_TICKS;
+            ASICSetZeroCrossFlag();
+        }
     }
 
     ASICWatchdogTicks -= ticksExecuted;
@@ -265,6 +273,34 @@ tm ASICGetTime() {
     return *timePtr;
 }
 #endif
+
+
+void WriteFliptronic(uint8_t value) {
+    SetAddressBus(WPC_FLIPTRONICS_FLIPPER_PORT_A);
+    SetDataBus(value);
+    SetDataBusDirection(true);
+  
+    while (ReadESignal()); 
+    DelayQuarterCycle();
+  
+    SetRWLow();  // RW Low
+    SetIOENLow();
+    SetWDENLow(); // WDEN low alerts cards on single ribbon cable
+    
+    while (!ReadESignal()); 
+    DelayQuarterCycle();
+    
+    __NOP(); __NOP(); __NOP(); __NOP();
+  
+    while (ReadESignal());
+    DelayQuarterCycle();
+    
+    __NOP(); __NOP(); __NOP(); 
+    
+    SetWDENHigh();    
+    SetIOENHigh();
+    SetRWHigh();    // RW High (Return to Read/Idle)
+}
 
 
 void ASICWrite(uint16_t offset, uint8_t value) {
@@ -294,14 +330,11 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             break;
 
         case WPC95_FLIPPER_COIL_OUTPUT:
-//            outputSolenoidMatrix->writeFliptronic((value) & 0xFF);
-// Fliptronics board cares about WDEN going low
             break;
 
         case WPC95_FLIPPER_SWITCH_INPUT:
         case WPC_FLIPTRONICS_FLIPPER_PORT_A:
-//            outputSolenoidMatrix->writeFliptronic((~value) & 0xFF);
-// Fliptronics board cares about WDEN going low
+            WriteFliptronic(value);
             break;
 
         case WPC_RAM_LOCKSIZE:
@@ -361,8 +394,8 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             if (value != ASICOldDiagnostigLedState) {
                 ASICDiagnosticLedToggleCount++;
                 ASICOldDiagnostigLedState = value;
-                if (ASICDiagnosticLedToggleCount%2) GPIO_BC(GPIOE) = (1U << 14);
-                else GPIO_BOP(GPIOE) = (1U << 14);
+                if (ASICDiagnosticLedToggleCount%2) SetBoardLEDOn();
+                else SetBoardLEDOff();
             }
             break;
 
@@ -403,6 +436,51 @@ void ASICWrite(uint16_t offset, uint8_t value) {
     }
 }
 
+uint8_t ASICReadLastCabinetInput() {
+    return ASICCabinetSwitches;
+}
+
+
+uint8_t ReadFliptronic() {
+    uint8_t result;
+
+    SetAddressBus(WPC_FLIPTRONICS_FLIPPER_PORT_A);    
+    // 2. Prepare for Read: Set Port E to Input (High-Z)
+    SetDataBusDirection(false); 
+    
+    // Set RW High (Read Mode)
+    SetRWHigh();
+    // Set IOEN line Low
+    SetIOENLow();
+  
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+  
+    // 4. Trigger: Drop IO to enable the DMD address decoder
+    SetWDENLow();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+  
+    // Grab the data now while the board is still driving the bus
+    result = ReadDataBus();
+  
+    // 7. Cleanup: Disable external hardware BEFORE restoring outputs
+    SetWDENHigh();  // IO High
+    SetIOENHigh();
+    SetRWLow();   // Restore RW to Write (Default)
+  
+    // 8. Safety: Give external hardware ~15ns to Hi-Z its buffers
+    DelayQuarterCycle();
+  
+    // Restore Data Bus to Output
+    SetDataBusDirection(true);
+  
+    return result;    
+}
+
+
 uint8_t ASICRead(uint16_t offset) {
     uint16_t asicRAMOffset = offset - ASIC_RAM_BASE_ADDRESS;
     uint8_t temp = 0;
@@ -419,10 +497,8 @@ uint8_t ASICRead(uint16_t offset) {
         case WPC95_FLIPPER_COIL_OUTPUT:
         case WPC95_FLIPPER_SWITCH_INPUT:
         case WPC_FLIPTRONICS_FLIPPER_PORT_A:
-// Fliptronics needs WDEN to go low        
-            return 0;        
-//            return inputSwitchMatrix->getFliptronicsKeys();
-
+            return ReadFliptronic();
+            
         case WPC_RAM_LOCK:
         case WPC_RAM_LOCKSIZE:
             return ASICRam[asicRAMOffset];

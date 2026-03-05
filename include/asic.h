@@ -76,8 +76,10 @@ int ASICGetWDExpired();
 bool ASICGetWDReset();
 void ASICClearWDReset();
 
+void ASICUseSoftwareZeroCross(bool useSWZC);
 void ASICSetZeroCrossFlag();
 void ASICSetCabinetInput(uint8_t value);
+uint8_t ASICReadLastCabinetInput();
 void ASICSetSwitchInput(int switchNr, int optionalValue);
 void ASICSetFliptronicsInput(uint8_t value, int optionalValue);
 void ASICFirqSourceDmd(bool fromDmd);

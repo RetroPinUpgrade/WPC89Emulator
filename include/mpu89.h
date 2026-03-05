@@ -42,10 +42,12 @@ The sound board needs the WDEN to go low
 typedef uint8_t byte;
 
 bool MPUInit();
+void MCUPortInit();
 void MPURelease();
 
 void MPUReset(bool turnOnBlanking);
 void MPUMakePortsSafeForBlanking();
+void MPUUseLegacySoundCard(bool useLegacy);
 void MPUSetROMAddress(uint8_t *romLocation, uint32_t romSize);
 void MPUSetCabinetInput(byte value);
 void MPUSetSwitchInput(int switchNr, int optionalValue);
@@ -94,14 +96,164 @@ __attribute__((always_inline)) static inline void DelayQuarterCycle(void) {
     __NOP(); __NOP(); 
 }
 
-// Force inline to ensure no function call overhead
-__attribute__((always_inline)) static inline void SetAddressBus(uint16_t addressValue) {
-    // The address lines (A0-A15) are driven by PortD (PD0-PD15)
-    // Writes all 16 bits of Port D instantly.
-    // Since PD0-PD15 covers the entire physical port, 
-    // we don't need to mask anything.
-    GPIO_OCTL(GPIOD) = (uint32_t)addressValue;
+// Control for the IOEN line
+__attribute__((always_inline)) static inline void SetIOENLow() {
+    GPIO_BC(GPIOA) = (1U << 7);
 }
+__attribute__((always_inline)) static inline void SetIOENHigh() {
+    GPIO_BOP(GPIOA) = (1U << 7);
+}
+// Control for the IO line
+__attribute__((always_inline)) static inline void SetIOLow() {
+    GPIO_BC(GPIOA) = (1U << 8);
+}
+__attribute__((always_inline)) static inline void SetIOHigh() {
+    GPIO_BOP(GPIOA) = (1U << 8);
+}
+// Control for the RW line
+__attribute__((always_inline)) static inline void SetRWLow() {
+    GPIO_BC(GPIOB) = (1U << 2);
+}
+__attribute__((always_inline)) static inline void SetRWHigh() {
+    GPIO_BOP(GPIOB) = (1U << 2);
+}
+// Control for the WDEN line (fliptronics)
+__attribute__((always_inline)) static inline void SetWDENLow() {
+    GPIO_BC(GPIOA) = (1U << 6);
+}
+__attribute__((always_inline)) static inline void SetWDENHigh() {
+    GPIO_BOP(GPIOA) = (1U << 6);
+}
+// Control for the RESET line 
+__attribute__((always_inline)) static inline void SetResetLow() {
+    GPIO_BC(GPIOB) = (1U << 5);
+}
+__attribute__((always_inline)) static inline void SetResetHigh() {
+    GPIO_BOP(GPIOB) = (1U << 5);
+}
+// Control for the TRIAC line 
+__attribute__((always_inline)) static inline void SetTriacLow() {
+    GPIO_BC(GPIOB) = (1U << 3);
+}
+__attribute__((always_inline)) static inline void SetTriacHigh() {
+    GPIO_BOP(GPIOB) = (1U << 3);
+}
+// Control for the SOL1 line 
+__attribute__((always_inline)) static inline void SetSol1Low() {
+    GPIO_BC(GPIOC) = (1U << 4);
+}
+__attribute__((always_inline)) static inline void SetSol1High() {
+    GPIO_BOP(GPIOC) = (1U << 4);
+}
+// Control for the SOL2 line 
+__attribute__((always_inline)) static inline void SetSol2Low() {
+    GPIO_BC(GPIOC) = (1U << 5);
+}
+__attribute__((always_inline)) static inline void SetSol2High() {
+    GPIO_BOP(GPIOC) = (1U << 5);
+}
+// Control for the SOL3 line 
+__attribute__((always_inline)) static inline void SetSol3Low() {
+    GPIO_BC(GPIOC) = (1U << 6);
+}
+__attribute__((always_inline)) static inline void SetSol3High() {
+    GPIO_BOP(GPIOC) = (1U << 6);
+}
+// Control for the SOL4 line 
+__attribute__((always_inline)) static inline void SetSol4Low() {
+    GPIO_BC(GPIOC) = (1U << 7);
+}
+__attribute__((always_inline)) static inline void SetSol4High() {
+    GPIO_BOP(GPIOC) = (1U << 7);
+}
+// Control for the LampRow line 
+__attribute__((always_inline)) static inline void SetLampRowLow() {
+    GPIO_BC(GPIOB) = (1U << 15);
+}
+__attribute__((always_inline)) static inline void SetLampRowHigh() {
+    GPIO_BOP(GPIOB) = (1U << 15);
+}
+// Control for the LampCol line 
+__attribute__((always_inline)) static inline void SetLampColLow() {
+    GPIO_BC(GPIOB) = (1U << 14);
+}
+__attribute__((always_inline)) static inline void SetLampColHigh() {
+    GPIO_BOP(GPIOB) = (1U << 14);
+}
+// Control for the Board Diagnostic LED
+__attribute__((always_inline)) static inline void SetBoardLEDOn() {
+    GPIO_BC(GPIOE) = (1U << 14);
+}
+__attribute__((always_inline)) static inline void SetBoardLEDOff() {
+    GPIO_BOP(GPIOE) = (1U << 14);
+}
+// Control for the Switch Col line
+__attribute__((always_inline)) static inline void SetSwitchColLow() {
+    GPIO_BC(GPIOE) = (1U << 9);
+}
+__attribute__((always_inline)) static inline void SetSwitchColHigh() {
+    GPIO_BOP(GPIOE) = (1U << 9);
+}
+// Control for the DISEN line
+__attribute__((always_inline)) static inline void SetDISENLow() {
+    GPIO_BC(GPIOB) = (1U << 13);
+}
+__attribute__((always_inline)) static inline void SetDISENHigh() {
+    GPIO_BOP(GPIOB) = (1U << 13);
+}
+// Control for the DISStrobe line
+__attribute__((always_inline)) static inline void SetDISStrobeLow() {
+    GPIO_BC(GPIOB) = (1U << 12);
+}
+__attribute__((always_inline)) static inline void SetDISStrobeHigh() {
+    GPIO_BOP(GPIOB) = (1U << 12);
+}
+// Control for the DIS1 line
+__attribute__((always_inline)) static inline void SetDIS1Low() {
+    GPIO_BC(GPIOB) = (1U << 8);
+}
+__attribute__((always_inline)) static inline void SetDIS1High() {
+    GPIO_BOP(GPIOB) = (1U << 8);
+}
+// Control for the DIS2 line
+__attribute__((always_inline)) static inline void SetDIS2Low() {
+    GPIO_BC(GPIOB) = (1U << 9);
+}
+__attribute__((always_inline)) static inline void SetDIS2High() {
+    GPIO_BOP(GPIOB) = (1U << 9);
+}
+// Control for the DIS3 line
+__attribute__((always_inline)) static inline void SetDIS3Low() {
+    GPIO_BC(GPIOB) = (1U << 10);
+}
+__attribute__((always_inline)) static inline void SetDIS3High() {
+    GPIO_BOP(GPIOB) = (1U << 10);
+}
+// Control for the DIS4 line
+__attribute__((always_inline)) static inline void SetDIS4Low() {
+    GPIO_BC(GPIOB) = (1U << 11);
+}
+__attribute__((always_inline)) static inline void SetDIS4High() {
+    GPIO_BOP(GPIOB) = (1U << 11);
+}
+
+
+__attribute__((always_inline)) static inline void SetAddressBus(uint16_t addressValue) {
+    // 1. Identify which bits in the PD3-PD15 range need to be SET (logic 1)
+    // Shift address by 3 to align with PD3. Mask to ensure we stay in PD3-PD15.
+    uint32_t set_mask = ((uint32_t)addressValue << 3) & 0xFFF8;
+
+    // 2. Identify which bits in the PD3-PD15 range need to be CLEARED (logic 0)
+    // We invert the address and apply the same mask.
+    uint32_t clear_mask = ((~(uint32_t)addressValue) << 3) & 0xFFF8;
+
+    // 3. Perform the atomic update.
+    // Bits 15:0 of BOP are "Set" bits.
+    // Bits 31:16 of BOP are "Clear" bits.
+    // Writing a '0' to any position in this register has no effect on the pin.
+    GPIO_BOP(GPIOD) = (clear_mask << 16) | set_mask;
+}
+
 
 // Sets the Data Bus lines to dataValue
 __attribute__((always_inline)) static inline void SetDataBus(uint8_t dataValue) {
@@ -151,7 +303,7 @@ __attribute__((always_inline)) static inline void StrobeSwitchColLatch() {
     DelayQuarterCycle();
     DelayQuarterCycle();
     DelayQuarterCycle();
-    GPIO_BOP(GPIOE) = (1U << 9);
+    SetSwitchColLow();
 
     // 3. Hold High (Pulse Width Delay)
     // At 240MHz, 5 NOPs ~= 20ns. 
@@ -160,7 +312,7 @@ __attribute__((always_inline)) static inline void StrobeSwitchColLatch() {
     DelayQuarterCycle();
 
     // 4. Lower the Clock (PE9)
-    GPIO_BC(GPIOE) = (1U << 9);
+    SetSwitchColHigh();
     DelayQuarterCycle();
     DelayQuarterCycle();
     DelayQuarterCycle();
@@ -203,37 +355,37 @@ __attribute__((always_inline)) static inline void SetBlanking(bool high) {
 // This timing was tested with a reproduction Power Driver board
 __attribute__((always_inline)) static inline void StrobeLampRow(void) {
     // 1. Drive Low (Prepare for edge)
-    GPIO_BC(GPIOB) = (1U << 15);
+    SetLampRowHigh();
 
-    // 2. Hold Low 
+    // 2. Hold High 
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
     // Since PB15 is Open Drain, this switches the pin to Hi-Z.
     // The rising edge sharpness depends on your pull-up resistor.
-    GPIO_BOP(GPIOB) = (1U << 15);
-    DelayQuarterCycle();
-    DelayQuarterCycle();
+    SetLampRowLow();
 }
 
 __attribute__((always_inline)) static inline void SetLampRow(uint8_t rowValue) {
     SetDataBus(rowValue);
     SetDRLine(false);
     DelayQuarterCycle();
+    DelayQuarterCycle();
     StrobeLampRow();
+    DelayQuarterCycle();
     SetDRLine(true);
 }
 
 // This timing was tested with a reproduction Power Driver board
 __attribute__((always_inline)) static inline void StrobeLampCol(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOB) = (1U << 14);
+    SetLampColLow();
 
     // 2. Hold Low 
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOB) = (1U << 14);
+    SetLampColHigh();
     DelayQuarterCycle();
     DelayQuarterCycle();
     DelayQuarterCycle();
@@ -255,13 +407,13 @@ __attribute__((always_inline)) static inline void SetLampCol(uint8_t colValue) {
 
 __attribute__((always_inline)) static inline void StrobeTriac(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOB) = (1U << 3);
+    SetTriacLow();
 
     // 2. Hold Low (~33ns)
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOB) = (1U << 3);
+    SetTriacHigh();
     DelayQuarterCycle();
     DelayQuarterCycle();
 }
@@ -269,13 +421,13 @@ __attribute__((always_inline)) static inline void StrobeTriac(void) {
 
 __attribute__((always_inline)) static inline void StrobeSol1(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOC) = (1U << 4);
+    SetSol1Low();
 
     // 2. Hold Low (~33ns)
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOC) = (1U << 4);
+    SetSol1High();
     DelayQuarterCycle();
     DelayQuarterCycle();
 }
@@ -291,13 +443,13 @@ __attribute__((always_inline)) static inline void SetSol1(uint8_t solValue) {
 
 __attribute__((always_inline)) static inline void StrobeSol2(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOC) = (1U << 5);
+    SetSol2Low();
 
     // 2. Hold Low (~33ns)
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOC) = (1U << 5);
+    SetSol2High();
     DelayQuarterCycle();
     DelayQuarterCycle();
 }
@@ -312,13 +464,13 @@ __attribute__((always_inline)) static inline void SetSol2(uint8_t solValue) {
 
 __attribute__((always_inline)) static inline void StrobeSol3(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOC) = (1U << 6);
+    SetSol3Low();
 
     // 2. Hold Low (~33ns)
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOC) = (1U << 6);
+    SetSol3High();
     DelayQuarterCycle();
     DelayQuarterCycle();
 }
@@ -333,13 +485,13 @@ __attribute__((always_inline)) static inline void SetSol3(uint8_t solValue) {
 
 __attribute__((always_inline)) static inline void StrobeSol4(void) {
     // 1. Drive Low
-    GPIO_BC(GPIOC) = (1U << 7);
+    SetSol4Low();
 
     // 2. Hold Low (~33ns)
     DelayQuarterCycle();
 
     // 3. Release High (LATCH triggers here)
-    GPIO_BOP(GPIOC) = (1U << 7);
+    SetSol4High();
     DelayQuarterCycle();
     DelayQuarterCycle();
 }
@@ -360,10 +512,14 @@ __attribute__((always_inline)) static inline bool IRQTriggered(void) {
     return (GPIO_ISTAT(GPIOB) & GPIO_PIN_0) == 0;
 }
 
+__attribute__((always_inline)) static inline bool ReadZC(void) {
+    return (GPIO_ISTAT(GPIOE) & GPIO_PIN_15) ? true : false;
+}
+
 __attribute__((always_inline)) static inline bool ReadESignal(void) {
-    return (GPIO_ISTAT(GPIOA) & GPIO_PIN_10) != 0;
+    return (GPIO_ISTAT(GPIOD) & GPIO_PIN_0) != 0;
 }
 
 __attribute__((always_inline)) static inline bool ReadQSignal(void) {
-    return (GPIO_ISTAT(GPIOA) & GPIO_PIN_9) != 0;
+    return (GPIO_ISTAT(GPIOD) & GPIO_PIN_1) != 0;
 }

@@ -17,7 +17,10 @@ void HPSoundCardHandleCommand(byte command, uint32_t curTicks);
 bool HPSoundCardCheckForOutboundByte(unsigned long curTicks);
 byte HPSoundCardGetOutboundByte();
 void HPSoundCardSetReporting(bool enable);
+void HPSoundCardRequestVersion();
 
+bool HPSoundCardPresent();
+char *HPSoundCardVersion();
 
 
 #define HOMEPIN_SOUND_CARD_H

@@ -5,16 +5,8 @@
 #include "string.h"
 #include "RPU-WPC-Display.h"
 #include "RPU-WPC-OperatorMenu.h"
+#include "HPSDCardReader.h"
 
-//#define FAKE_DISPLAY_FIRQ
-#define ROM_IN_C_FILE_ARRAY
-
-#ifdef ROM_IN_C_FILE_ARRAY
-uint8_t* GetROMPointer(void);
-uint32_t GetROMSize(void);
-uint8_t CheckROMIntegrity();
-const char *GetROMName();
-#endif
 
 void SwitchTo240MHz(void) {
     /* 1. Reset RCU to a known state */
@@ -142,6 +134,73 @@ uint32_t TwoMHzTicksSinceStart() {
 
     return accumulated_ticks;
 }
+
+
+/* * 32-bit state array for the GPIO_BOP register.
+ * Lower 16 bits: Set pins (0=PD0, 1=PD1)
+ * Upper 16 bits: Reset pins (16=PD0, 17=PD1)
+ * * Standard 6809 Phase: Q leads E by 90 degrees.
+ */
+
+uint32_t dma_quadrature_states[4] = {
+    0x00030000, // State 0: E=0, Q=0 (Reset PD0, Reset PD1)
+    0x00010002, // State 1: E=0, Q=1 (Reset PD0, Set PD1)
+    0x00000003, // State 2: E=1, Q=1 (Set PD0, Set PD1)
+    0x00020001  // State 3: E=1, Q=0 (Set PD0, Reset PD1)
+};
+
+
+void Init_DMA_Quadrature_Clocks(void) {
+    // 1. Enable Clocks (GPIOD, DMA0, and TIMER2)
+    rcu_periph_clock_enable(RCU_GPIOD);
+    rcu_periph_clock_enable(RCU_DMA0);
+    rcu_periph_clock_enable(RCU_TIMER2);
+
+    // 2. Configure PD0 (E) and PD1 (Q) as standard Push-Pull Outputs
+    // Do NOT use AF mode, as the DMA needs to drive the GPIO port directly.
+    gpio_mode_set(GPIOD, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO_PIN_0 | GPIO_PIN_1);
+    gpio_output_options_set(GPIOD, GPIO_OTYPE_PP, GPIO_OSPEED_2MHZ, GPIO_PIN_0 | GPIO_PIN_1);
+
+    // 3. Configure DMA0, Channel 2 (Linked to TIMER2 Update Event)
+    dma_single_data_parameter_struct dma_init_struct;
+    dma_deinit(DMA0, DMA_CH2);
+    
+    dma_init_struct.periph_addr         = (uint32_t)&GPIO_BOP(GPIOD);
+    dma_init_struct.periph_inc          = DMA_PERIPH_INCREASE_DISABLE;
+    dma_init_struct.memory0_addr        = (uint32_t)dma_quadrature_states;
+    dma_init_struct.memory_inc          = DMA_MEMORY_INCREASE_ENABLE;
+    dma_init_struct.periph_memory_width = DMA_PERIPH_WIDTH_32BIT;
+    dma_init_struct.circular_mode       = DMA_CIRCULAR_MODE_ENABLE;
+    dma_init_struct.direction           = DMA_MEMORY_TO_PERIPH;
+    dma_init_struct.number              = 4; // 4 states in the array
+    dma_init_struct.priority            = DMA_PRIORITY_ULTRA_HIGH; // Max priority to minimize jitter
+    dma_single_data_mode_init(DMA0, DMA_CH2, &dma_init_struct);
+    
+    // Select the specific subperipheral route for TIMER2_UP on GD32F4
+    dma_channel_subperipheral_select(DMA0, DMA_CH2, DMA_SUBPERI5);
+    dma_channel_enable(DMA0, DMA_CH2);
+
+    // 4. Configure TIMER2 as the 8MHz pacing clock
+    timer_parameter_struct timer_init_para;
+    timer_deinit(TIMER2);
+
+    // Assuming a 200MHz System Clock:
+    // 200MHz / 25 ticks = 8MHz update rate (125ns per state)
+    // 8MHz / 4 states = 2MHz full quadrature cycle (500ns)
+    timer_init_para.prescaler         = 0;
+    timer_init_para.alignedmode       = TIMER_COUNTER_EDGE;
+    timer_init_para.counterdirection  = TIMER_COUNTER_UP;
+    // 120MHz / 15 ticks = 8MHz update rate (125ns per state)
+    timer_init_para.period = 12;
+    timer_init_para.clockdivision     = TIMER_CKDIV_DIV1;
+    timer_init_para.repetitioncounter = 0;
+    timer_init(TIMER2, &timer_init_para);
+
+    // 5. Connect the Timer to the DMA Request and Start
+    timer_dma_enable(TIMER2, TIMER_DMA_UPD);
+    timer_enable(TIMER2);
+}
+
 
 // This timer sets up E & Q lines at 2MHz (with Q leading E by 90 degrees)
 // on PA9 and PA10 (for the DMD Controller or any other periperals that need it)
@@ -362,6 +421,41 @@ void SetASICFromDateTimeRegisters(uint32_t rtc_date_reg, uint32_t rtc_time_reg) 
 
 #define CPU_TICKS_PER_SECOND    2000000U
 
+
+// This function can be used to test the ports of a new prototype
+// board (insert after BackupDomainInit in main)
+void TestPorts() {
+    EnableCycleCounter();
+    uint32_t curTicks = 0;
+    uint32_t lastTicks = curTicks;
+
+    MCUPortInit();
+    Init_DMA_Quadrature_Clocks();
+    SetDISENLow();
+    SetBlanking(true);
+
+    while (1) {
+        curTicks = TwoMHzTicksSinceStart();
+
+        if (curTicks!=lastTicks) {
+            if (ReadZC()) {
+                if ((curTicks/200000)%2) SetBoardLEDOff();
+                else SetBoardLEDOn();
+            } else {
+                if ((curTicks/2000000)%2) SetBoardLEDOff();
+                else SetBoardLEDOn();
+            }
+
+            if ((curTicks/500000)%2) SetDIS4Low();
+            else SetDIS4High();
+
+            lastTicks = curTicks;
+        }
+
+    }
+}
+
+
 int main(void) {
     SwitchTo240MHz();
     // Right after reset, before doing anything else, read
@@ -378,9 +472,12 @@ int main(void) {
     GPIO_OSPD(GPIOE) |= (3U << (14 * 2)); 
 
     // Main Application
-    GPIO_BOP(GPIOE) = (1U << 14); // turn the LED on
+    GPIO_BOP(GPIOE) = (1U << 14); // turn the LED off
+
     MPUInit(); // RAM is cleared in this function
-    InitTimer0PWM(); // Turn on E and Q clock signals
+//    InitTimer0PWM(); // Turn on E and Q clock signals
+    Init_DMA_Quadrature_Clocks(); // Turn on E and Q clock signals
+    HPSDCardPortInit(); // Initialize the pins for the SD card
     RPU_WPC_SetupPorts();
     SetBlanking(true); // This is temporary -- should be done through MPU
    
@@ -389,16 +486,17 @@ int main(void) {
         RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
     }
 
-    if (!CheckROMIntegrity()) {
+    bool ROMIntegrityFailed = false;
+    if (!HPSDCheckROMIntegrity()) {
         // Report an error and stop here
-        while (1);
+        ROMIntegrityFailed = true;
     }
     // The ROM is good -- we can get the name
     // with this:
     // GetROMName();
 
     RestoreMPURAM();    
-    MPUSetROMAddress(GetROMPointer(), GetROMSize());
+    MPUSetROMAddress(HPSDGetROMPointer(), HPSDGetROMSize());
     ASICInit();
     CPUSetCallbacks(MPUWrite8, MPURead8);
     SetBlanking(false); // This is temporary -- should be done through MPU
@@ -416,17 +514,24 @@ int main(void) {
     bool FIRQHasBeenTriggered = false;
     bool RAMHasBeenBackedUp = false;
     bool pauseEmulationForMenu = false;
+    bool romInitComplete = false;
+    bool sawZCHigh = false;
+    bool sawZCLow = false;
     uint32_t lastTimeRAMBackedUp = 0;
     uint32_t lastTimeUpdate = 0;
 
+    if (ROMIntegrityFailed) pauseEmulationForMenu = true;
+
     while (1) {
         HPSoundCardUpdate();
+        if (ReadZC()) sawZCHigh = true;
+        else sawZCLow = true;
         if (MPUDisplayHighPageOverride()) RPU_WPC_DisplayShowLogo(1, lastTickCount);
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
         if (ASICGetBlanking()) {
             // also, check to see if the operator wants to 
             // boot to the special menu 
-            if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest()) {
+            if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(true)) {
                 pauseEmulationForMenu = true;
             }
         } else {
@@ -436,6 +541,21 @@ int main(void) {
                 RAMHasBeenBackedUp = true;
                 lastTimeRAMBackedUp = currentTickCount;
                 BackupRAM();
+            }
+            if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(false)) {
+                pauseEmulationForMenu = true;
+            }
+            if (sawZCHigh && sawZCLow) { 
+                ASICUseSoftwareZeroCross(false);
+            }
+            if (!romInitComplete) {
+                romInitComplete = true;
+                if (!HPSoundCardPresent()) {
+                    // we haven't seen the Homepin sound card, so 
+                    // we'll tell the mpu emulator to default to 
+                    // a legacy card.
+                    MPUUseLegacySoundCard(true);
+                }
             }
         }
 
@@ -479,10 +599,23 @@ int main(void) {
             }
         } else {
             pauseEmulationForMenu = RPU_WPC_Menu(currentTickCount);
+
             if (!pauseEmulationForMenu) {
-                lastTickCount = currentTickCount;
-                RPU_WPC_DisplayShowLogoScreen();
-                RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
+                if (ROMIntegrityFailed) {
+                    pauseEmulationForMenu = true;
+                    RPU_WPC_DisplayShowLogoScreen();
+                    RPU_WPC_DisplayTextWithLogo("ROM not found");
+                } else {
+                    lastTickCount = currentTickCount;
+                    RPU_WPC_DisplayShowLogoScreen();
+                    RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
+                    if (RPU_WPC_MenuRequiresReset()) {
+                        MPUReset(true);
+                        romInitComplete = false;
+                        lastTickCount = currentTickCount;
+//                        SetBlanking(true);
+                    }
+                }
             }
         }
 
