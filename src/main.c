@@ -510,6 +510,7 @@ int main(void) {
 
     EnableCycleCounter();
     uint32_t lastTickCount = TwoMHzTicksSinceStart();
+    uint32_t startingTickCount = TwoMHzTicksSinceStart();
 
     bool FIRQHasBeenTriggered = false;
     bool RAMHasBeenBackedUp = false;
@@ -517,22 +518,39 @@ int main(void) {
     bool romInitComplete = false;
     bool sawZCHigh = false;
     bool sawZCLow = false;
+    bool soundCardChecked = false;
     uint32_t lastTimeRAMBackedUp = 0;
     uint32_t lastTimeUpdate = 0;
 
     if (ROMIntegrityFailed) pauseEmulationForMenu = true;
 
+    if (!HPSoundCardPresent()) {
+        // we haven't seen the Homepin sound card, so 
+        // we'll tell the mpu emulator to default to 
+        // a legacy card.
+        MPUUseLegacySoundCard(true);
+    }
+
     while (1) {
         HPSoundCardUpdate();
-        if (ReadZC()) sawZCHigh = true;
-        else sawZCLow = true;
         if (MPUDisplayHighPageOverride()) RPU_WPC_DisplayShowLogo(1, lastTickCount);
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
         if (ASICGetBlanking()) {
-            // also, check to see if the operator wants to 
+            if (ReadZC()) sawZCHigh = true;
+            else sawZCLow = true;
+                // also, check to see if the operator wants to 
             // boot to the special menu 
             if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(true)) {
                 pauseEmulationForMenu = true;
+            }
+            if (!soundCardChecked && (currentTickCount-startingTickCount)>CPU_TICKS_PER_SECOND) {
+                soundCardChecked = true;
+                if (!HPSoundCardPresent()) {
+                    MPUUseLegacySoundCard(true);
+                }
+                if (sawZCHigh && sawZCLow) { 
+                    ASICUseSoftwareZeroCross(false);
+                }    
             }
         } else {
             // save settings every 60 seconds
@@ -545,18 +563,10 @@ int main(void) {
             if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(false)) {
                 pauseEmulationForMenu = true;
             }
-            if (sawZCHigh && sawZCLow) { 
-                ASICUseSoftwareZeroCross(false);
-            }
             if (!romInitComplete) {
                 romInitComplete = true;
-                if (!HPSoundCardPresent()) {
-                    // we haven't seen the Homepin sound card, so 
-                    // we'll tell the mpu emulator to default to 
-                    // a legacy card.
-                    MPUUseLegacySoundCard(true);
-                }
             }
+            if (ReadZC()) ASICSetZeroCrossFlag(true);            
         }
 
         // Every minute, update the date & time on ASIC

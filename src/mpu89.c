@@ -270,6 +270,7 @@ void MPUReset(bool turnOnBlanking) {
   DisplayHighPage = 0;
   DisplayLowPageStartAddress = &DisplayRAM[DisplayLowPage*512];
   DisplayHighPageStartAddress = &DisplayRAM[DisplayHighPage*512];
+  SetResetHigh(); // the periperal reset line is active high
 }
 
 void MPUSetROMAddress(uint8_t *romLocation, uint32_t romSize) {

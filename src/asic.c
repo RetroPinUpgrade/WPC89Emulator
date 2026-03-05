@@ -415,6 +415,7 @@ void ASICWrite(uint16_t offset, uint8_t value) {
                 if (ASICPeriodicIRQTimerEnabled) {
                     ASICBlankSignalHigh = false;
                     SetBlanking(ASICBlankSignalHigh);
+                    SetResetLow();
                 }
             }
 
