@@ -619,6 +619,9 @@ int main(void) {
 //                        SetBlanking(true);
                     }
                 }
+            } else {
+                if ((currentTickCount/CPU_TICKS_PER_SECOND)%2) SetBoardLEDOn();
+                else SetBoardLEDOff();
             }
         }
 
