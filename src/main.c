@@ -524,13 +524,6 @@ int main(void) {
 
     if (ROMIntegrityFailed) pauseEmulationForMenu = true;
 
-    if (!HPSoundCardPresent()) {
-        // we haven't seen the Homepin sound card, so 
-        // we'll tell the mpu emulator to default to 
-        // a legacy card.
-        MPUUseLegacySoundCard(true);
-    }
-
     while (1) {
         HPSoundCardUpdate();
         if (MPUDisplayHighPageOverride()) RPU_WPC_DisplayShowLogo(1, lastTickCount);
