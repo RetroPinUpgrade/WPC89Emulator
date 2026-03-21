@@ -484,6 +484,15 @@ int main(void) {
     if (RPU_WPC_DisplayInit()) {
         RPU_WPC_DisplayShowLogoScreen();
         RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
+/*        uint32_t stupidLoop = 0;
+        while (1) {
+            stupidLoop += 1;
+            if (stupidLoop>4000000) {
+                WriteDisplay(0x3800, 0x55);
+                stupidLoop = 0;
+            }
+        }
+*/            
     }
 
     bool ROMIntegrityFailed = false;
