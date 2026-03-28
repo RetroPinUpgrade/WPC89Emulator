@@ -516,10 +516,10 @@ __attribute__((always_inline)) static inline bool ReadZC(void) {
     return (GPIO_ISTAT(GPIOE) & GPIO_PIN_15) ? true : false;
 }
 
-__attribute__((always_inline)) static inline bool ReadESignal(void) {
+__attribute__((always_inline)) static inline bool ReadNotESignal(void) {
     return (GPIO_ISTAT(GPIOD) & GPIO_PIN_0) != 0;
 }
 
-__attribute__((always_inline)) static inline bool ReadQSignal(void) {
+__attribute__((always_inline)) static inline bool ReadNotQSignal(void) {
     return (GPIO_ISTAT(GPIOD) & GPIO_PIN_1) != 0;
 }

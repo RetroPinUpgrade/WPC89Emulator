@@ -280,19 +280,19 @@ void WriteFliptronic(uint8_t value) {
     SetDataBus(value);
     SetDataBusDirection(true);
   
-    while (ReadESignal()); 
+    while (ReadNotESignal()); 
     DelayQuarterCycle();
   
     SetRWLow();  // RW Low
     SetIOENLow();
     SetWDENLow(); // WDEN low alerts cards on single ribbon cable
     
-    while (!ReadESignal()); 
+    while (!ReadNotESignal()); 
     DelayQuarterCycle();
     
     __NOP(); __NOP(); __NOP(); __NOP();
   
-    while (ReadESignal());
+    while (ReadNotESignal());
     DelayQuarterCycle();
     
     __NOP(); __NOP(); __NOP(); 

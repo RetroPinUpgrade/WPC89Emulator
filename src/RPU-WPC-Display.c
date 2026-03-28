@@ -266,6 +266,9 @@ bool RPU_WPC_DisplayShowLogoScreen(int pageNum) {
     for (int count=0; count<512; count++) {
         if (pageNum==0) WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, HPLogoFrame[count]);
         else if (pageNum==1) WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, HPLogoFrame[count]);
+        for (int nopCount=0; nopCount<100; nopCount++) {
+            __NOP();
+        }
     }
     return true;
 }

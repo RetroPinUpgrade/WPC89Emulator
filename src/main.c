@@ -6,7 +6,7 @@
 #include "RPU-WPC-Display.h"
 #include "RPU-WPC-OperatorMenu.h"
 #include "HPSDCardReader.h"
-
+#include <stdio.h>
 
 void SwitchTo240MHz(void) {
     /* 1. Reset RCU to a known state */
@@ -20,7 +20,8 @@ void SwitchTo240MHz(void) {
 
     /* 3. Set Flash Wait States (WS) for 240MHz */
     /* Note: Compiler suggested WS_WSCNT_15 */
-    fmc_wscnt_set(WS_WSCNT_15); 
+//    fmc_wscnt_set(WS_WSCNT_15); 
+    fmc_wscnt_set(WS_WSCNT_7); 
 
     /* 4. Configure PLL: 25MHz / 25 * 480 / 2 = 240MHz */
     /* Parameters: Source, PSC, N, P, Q */
@@ -191,6 +192,7 @@ void Init_DMA_Quadrature_Clocks(void) {
     timer_init_para.alignedmode       = TIMER_COUNTER_EDGE;
     timer_init_para.counterdirection  = TIMER_COUNTER_UP;
     // 120MHz / 15 ticks = 8MHz update rate (125ns per state)
+    // 120MHz / 12 ticks = 10MHz update rate (100ns per state)
     timer_init_para.period = 12;
     timer_init_para.clockdivision     = TIMER_CKDIV_DIV1;
     timer_init_para.repetitioncounter = 0;
@@ -480,19 +482,151 @@ int main(void) {
     HPSDCardPortInit(); // Initialize the pins for the SD card
     RPU_WPC_SetupPorts();
     SetBlanking(true); // This is temporary -- should be done through MPU
-   
+    SetBlanking(false);
+    EnableCycleCounter();
+
     if (RPU_WPC_DisplayInit()) {
+        // Test Display RAM reads & writes
+        // Set low page to 0
+        WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
+        bool displayRAMFailed = false;
+        int testsPassed = 0;
+        WriteDisplay(WPC_DMD_LOW_PAGE, 0);
+        WriteDisplay(WPC_DMD_LOW_PAGE, 0);
+        WriteDisplay(WPC_DMD_HIGH_PAGE, 1);
+        WriteDisplay(WPC_DMD_HIGH_PAGE, 1);
+        WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
+        WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
+
         RPU_WPC_DisplayShowLogoScreen();
-        RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
-/*        uint32_t stupidLoop = 0;
-        while (1) {
-            stupidLoop += 1;
-            if (stupidLoop>4000000) {
-                WriteDisplay(0x3800, 0x55);
-                stupidLoop = 0;
+        char buf[128];
+        snprintf(buf, 128, "Homepin MPU\n");
+        RPU_WPC_DisplayTextWithLogo(buf);
+
+        // Narrow test - just single page 0x55 writes
+        volatile uint32_t numLoops = 0;
+        while (0) {
+            displayRAMFailed = false;
+
+            int count = 0;
+            uint8_t testValue = 0x11;
+
+            switch ((numLoops%4)) {
+                case 0: testValue = 0x55; break;
+                case 1: testValue = 0xAA; break;
+                case 2: testValue = 0xFF; break;
+                case 3: testValue = 0x00; break;
+            }
+
+            for (count=0; count<512; count++) {
+                WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0xFF);
+                WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0xFF);
+            }
+
+            for (count=0; count<512; count++) {
+                if (numLoops%2) {
+                    WriteDisplay(WPC_DMD_HIGH_PAGE, numLoops/2);
+                    WriteDisplay(WPC_DMD_ACTIVE_PAGE, numLoops/2);
+                } else {
+                    WriteDisplay(WPC_DMD_LOW_PAGE, numLoops/2);
+                    WriteDisplay(WPC_DMD_ACTIVE_PAGE, numLoops/2);
+                }
+                WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, testValue);
+                uint8_t newData = ReadDisplay(DISPLAY_RAM_LOWER_PAGE_START+count);
+                if (newData!=testValue) {
+//                    __asm("BKPT #0");
+                    char buf[128];
+                    snprintf(buf, 128, "W=0x%02X\nR=0x%02X\nnum=%ld", testValue, newData, count+numLoops*512);
+                    RPU_WPC_DisplayTextWithLogo(buf);
+                    uint32_t curTime = TwoMHzTicksSinceStart();
+                    uint32_t startTime = TwoMHzTicksSinceStart();
+                    while (curTime<(startTime+CPU_TICKS_PER_SECOND*10)) {
+                        curTime = TwoMHzTicksSinceStart();
+                    }
+                }
+//                WriteDisplay(WPC_DMD_LOW_PAGE, count);
+            }
+            numLoops+=1;
+            uint32_t curTime = TwoMHzTicksSinceStart();
+            uint32_t startTime = TwoMHzTicksSinceStart();
+            while (curTime<(startTime+500000)) {
+                curTime = TwoMHzTicksSinceStart();
             }
         }
-*/            
+
+        // Full test (all pages, 0x55 and 0xAA)
+        while (0) {
+            displayRAMFailed = false;
+            for (int pages=0; pages<8; pages++) {
+                WriteDisplay(WPC_DMD_LOW_PAGE, pages*2);
+                WriteDisplay(WPC_DMD_HIGH_PAGE, pages*2+1);
+                WriteDisplay(WPC_DMD_ACTIVE_PAGE, pages*2);
+
+                int count = 0;
+                for (count=0; count<512 && !displayRAMFailed; count++) {
+                    WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0x55);
+                    if (ReadDisplay(DISPLAY_RAM_LOWER_PAGE_START+count)!=0x55) displayRAMFailed = true;
+                }
+                if (!displayRAMFailed) testsPassed += 1;
+                uint32_t curTime = TwoMHzTicksSinceStart();
+                uint32_t startTime = TwoMHzTicksSinceStart();
+                while (curTime<(startTime+200000)) {
+                    curTime = TwoMHzTicksSinceStart();
+                }
+
+                for (count=0; count<512 && !displayRAMFailed; count++) {
+                    WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0xAA);
+                    if (ReadDisplay(DISPLAY_RAM_LOWER_PAGE_START+count)!=0xAA) displayRAMFailed = true;
+                }
+                if (!displayRAMFailed) testsPassed += 1;
+                curTime = TwoMHzTicksSinceStart();
+                startTime = TwoMHzTicksSinceStart();
+                while (curTime<(startTime+200000)) {
+                    curTime = TwoMHzTicksSinceStart();
+                }
+
+                for (count=0; count<512 && !displayRAMFailed; count++) {
+                    WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, 0xAA);
+                    if (ReadDisplay(DISPLAY_RAM_UPPER_PAGE_START+count)!=0xAA) displayRAMFailed = true;
+                }
+                if (!displayRAMFailed) testsPassed += 1;
+                curTime = TwoMHzTicksSinceStart();
+                startTime = TwoMHzTicksSinceStart();
+                while (curTime<(startTime+200000)) {
+                    curTime = TwoMHzTicksSinceStart();
+                }
+
+                for (count=0; count<512 && !displayRAMFailed; count++) {
+                    WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, 0x55);
+                    if (ReadDisplay(DISPLAY_RAM_UPPER_PAGE_START+count)!=0x55) displayRAMFailed = true;
+                }
+                if (!displayRAMFailed) testsPassed += 1;
+                curTime = TwoMHzTicksSinceStart();
+                startTime = TwoMHzTicksSinceStart();
+                while (curTime<(startTime+200000)) {
+                    curTime = TwoMHzTicksSinceStart();
+                }
+
+            }
+        }
+
+        if (0) {
+            uint32_t curTime = TwoMHzTicksSinceStart();
+            uint32_t startTime = TwoMHzTicksSinceStart();
+            while (curTime<(startTime+6000000)) {
+                curTime = TwoMHzTicksSinceStart();
+                WriteDisplay(WPC_DMD_ACTIVE_PAGE, (curTime/10000)%2);
+            }
+        }
+        if (0) {
+            WriteDisplay(WPC_DMD_LOW_PAGE, 0);
+            WriteDisplay(WPC_DMD_HIGH_PAGE, 1);
+            WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
+            RPU_WPC_DisplayShowLogoScreen();
+            char buf[128];
+            snprintf(buf, 128, "Tests passed\n%d", testsPassed);
+            RPU_WPC_DisplayTextWithLogo(buf);
+        }
     }
 
     bool ROMIntegrityFailed = false;

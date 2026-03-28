@@ -408,7 +408,7 @@ __attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t d
   // 2. Wait for the "Safe Zone"
   // We wait for E to go LOW ( !E is HIGH ). 
   // This is the period where the RAM is NOT listening.
-  while (ReadESignal()); 
+  while (ReadNotESignal()); 
   DelayQuarterCycle();
 
   // 3. Prepare the Transceiver
@@ -421,7 +421,7 @@ __attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t d
   // Now we wait for E to go HIGH ( !E goes LOW ).
   // The moment this happens, the OR gate (U19A) output drops.
   // !WE goes LOW. The RAM starts its write.
-  while (!ReadESignal()); 
+  while (!ReadNotESignal()); 
   DelayQuarterCycle();
   
   // 6. Stability Window
@@ -433,7 +433,7 @@ __attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t d
   // We wait for E to go LOW ( !E goes HIGH ).
   // This hardware edge physically ENDS the write and latches the data.
   // The 4245 is still actively driving the bus.
-  while (ReadESignal());
+  while (ReadNotESignal());
   DelayQuarterCycle();
   
   // 8. Data Hold & Cleanup
@@ -485,55 +485,44 @@ __attribute__((always_inline)) static inline uint8_t ReadLegacySoundCard(uint16_
 }
 
 
+
 __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
-  // 1. Setup Phase (Bus is idle, Transceiver is off)
   SetAddressBus(address);
   SetDataBus(data);
-  SetDataBusDirection(true);
-
-  // 2. Wait for the "Safe Zone"
-  // We wait for E to go LOW ( !E is HIGH ). 
-  // This is the period where the RAM is NOT listening.
-  while (ReadESignal()); 
-  DelayQuarterCycle();
-
-  // 3. Prepare the Transceiver
-  // We set RW and Enable the 4245 while the RAM window is closed.
   SetRWLow();  // RW Low
-  SetIOENLow();
-  
-  // 4. Arm the !AddressValid (PORT)
-  // We drop IO now. !WE is still HIGH because !E is still HIGH.
-  SetIOLow(); // IO Low
-  
-  // 5. Trigger the Hardware Write
-  // Now we wait for E to go HIGH ( !E goes LOW ).
-  // The moment this happens, the OR gate (U19A) output drops.
-  // !WE goes LOW. The RAM starts its write.
-  while (!ReadESignal()); 
-  DelayQuarterCycle();
-  
-  // 6. Stability Window
-  // The RAM is now in its transparent write state. 
-  // We stay here for a moment to ensure the signal is rock solid.
-  __NOP(); __NOP(); __NOP(); __NOP();
+  SetIOENHigh();
+  SetDataBusDirection(true);
+  SetIOENLow(); // falling edge of E, we put up address, RW
 
-  // 7. The Hardware Latch
-  // We wait for E to go LOW ( !E goes HIGH ).
-  // This hardware edge physically ENDS the write and latches the data.
-  // The 4245 is still actively driving the bus.
-  while (ReadESignal());
-  DelayQuarterCycle();
-  
-  // 8. Data Hold & Cleanup
-  // The write is over. We wait a tiny bit to satisfy RAM hold times
-  // before we "let go" of the bus.
-  __NOP(); __NOP(); __NOP(); 
-  
-  SetIOHigh();    // IO High (!AddressValid released)
+  // Wait for next cycle
+  if (ReadNotESignal()) {
+    while (ReadNotESignal()); 
+  }
+  __disable_irq();
+  while (!ReadNotESignal()); 
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  SetIOLow();  
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+//  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+//  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+//  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();  
+  SetIOHigh();  
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();  
+  __enable_irq();
   SetIOENHigh();
   SetRWHigh();    // RW High (Return to Read/Idle)
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
 }
+
 
 
 
@@ -569,26 +558,69 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
       DisplayHighPageNeedsOverride = true;
     }
   } else if (offset==WPC_DMD_LOW_PAGE) {
-    DisplayLowPage = value;
-    if (DisplayLowPage>15) DisplayLowPage = 15;
+    DisplayLowPage = value & 0x0F;
     DisplayLowPageStartAddress = &DisplayRAM[DisplayLowPage*512];
     WriteDisplay(offset, value);
   } else if (offset==WPC_DMD_HIGH_PAGE) {
-    DisplayHighPage = value;
-    if (DisplayHighPage>15) DisplayHighPage = 15;
+    DisplayHighPage = value & 0x0F;
     DisplayHighPageStartAddress = &DisplayRAM[DisplayHighPage*512];
     WriteDisplay(offset, value);
   } else if (offset==WPC_DMD_ACTIVE_PAGE) {
-    DisplayNextActivePage = value;
-    if (DisplayNextActivePage>15) DisplayNextActivePage = 15;
+    DisplayNextActivePage = value & 0x0F;
     WriteDisplay(offset, value);
+    for (int count=0; count<2400; count++) __NOP();
   } else if (offset==WPC_DMD_SCANLINE /*|| offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR*/) {
     DisplayScanlineTrigger = value;
     //if (offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR) ASICFirqSourceDmd(false);
     WriteDisplay(offset, value);
+//    for (int count=0; count<2400; count++) __NOP();
   }
 
 
+}
+
+
+uint8_t ReadDisplayRegister(uint16_t address) {
+  uint8_t result;
+
+  SetAddressBus(address);    
+  SetDataBusDirection(false); 
+  SetRWHigh();
+  SetIOHigh();  
+  SetIOENLow();
+
+  // Wait for next cycle
+  if (ReadNotESignal()) {
+    while (ReadNotESignal()); 
+  }
+  while (!ReadNotESignal()); 
+  __disable_irq();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  SetIOLow();  
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  result = ReadDataBus();
+  __enable_irq();
+  
+  // 7. Cleanup: Disable external hardware BEFORE restoring outputs
+  SetIOENHigh();
+  SetIOHigh();  // IO High
+  SetRWLow();   // Restore RW to Write (Default)
+
+  // Restore Data Bus to Output
+  SetDataBusDirection(true);
+  return result;
 }
 
 
@@ -597,91 +629,80 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   uint8_t result;
 
   SetAddressBus(address);    
-  // 2. Prepare for Read: Set Port E to Input (High-Z)
   SetDataBusDirection(false); 
-  
-  // Set RW High (Read Mode)
   SetRWHigh();
-  // Set IOEN line Low
+  SetIOHigh();  
   SetIOENLow();
 
-  DelayQuarterCycle();
-  DelayQuarterCycle();
-  DelayQuarterCycle();
+  // Wait for next cycle
+  if (ReadNotESignal()) {
+    while (ReadNotESignal()); 
+  }
+  while (!ReadNotESignal()); 
+  while (ReadNotESignal()); 
+  while (!ReadNotESignal()); 
+  __disable_irq();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  SetIOLow();  
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  result = ReadDataBus();
+  __enable_irq();
+  
+  // 7. Cleanup: Disable external hardware BEFORE restoring outputs
+  SetIOENHigh();
+  SetIOHigh();  // IO High
+  SetRWLow();   // Restore RW to Write (Default)
 
-  // 4. Trigger: Drop IO to enable the DMD address decoder
-  SetIOLow();
-  DelayQuarterCycle();
-  DelayQuarterCycle();
-  DelayQuarterCycle();
+  // Restore Data Bus to Output
+  SetDataBusDirection(true);
+  while (!ReadNotESignal()); 
+  while (ReadNotESignal()); 
+
+  return result;
+}
+
+/*
+// Works with OG DMDC
+__attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
+  uint8_t result;
+
+  SetAddressBus(address);    
+  SetDataBusDirection(false); 
+  SetRWHigh();
+  SetIOLow();  
+
+  SetIOENLow();
+  while (!ReadNotESignal()); 
+  while (ReadNotESignal()); 
+  while (!ReadNotESignal()); 
+  __NOP(); __NOP(); __NOP(); __NOP();
 
   // Grab the data now while the board is still driving the bus
   result = ReadDataBus();
 
   // 7. Cleanup: Disable external hardware BEFORE restoring outputs
-  SetIOHigh();  // IO High
   SetIOENHigh();
+  SetIOHigh();  // IO High
   SetRWLow();   // Restore RW to Write (Default)
-
-  // 8. Safety: Give external hardware ~15ns to Hi-Z its buffers
-  DelayQuarterCycle();
 
   // Restore Data Bus to Output
   SetDataBusDirection(true);
 
   return result;
 }
-
-__attribute__((always_inline)) static inline uint8_t ReadDisplay1(uint16_t address) {
-  uint8_t result;
-
-  // 1. Setup Phase
-  SetAddressBus(address);    
-  SetDataBusDirection(false); 
-  
-  // 2. Initiate Read Mode
-  SetRWHigh();
-  
-  // Wait for RW to physically cross the logic threshold
-  DelayQuarterCycle(); 
-  DelayQuarterCycle();
-
-  SetIOENLow();
-
-  // Wait for the Safe Zone (E is Low)
-  while (ReadESignal()); 
-  
-  // Now it is safe to drop PORT 
-  SetIOLow();
-
-  // Hardware Trigger (E goes High)
-  while (!ReadESignal()); 
-  
-  // Wait for 245 gate propagation 
-  DelayQuarterCycle(); 
-
-  // Sample the bus
-  result = ReadDataBus();
-
-  // Wait for E to go Low (End of cycle)
-  while (ReadESignal());
-  
-  // 3. Initiate Deselect
-  SetIOHigh();  
-  SetIOENHigh();
-  
-  // 4. THE FIX: Match WriteDisplay idle state.
-  // Leave RW High so the 245 cannot drive floating 0xFFs into the RAM.
-  SetRWHigh();  
-
-  // Turnaround Safety
-  __NOP(); __NOP(); 
-  SetDataBusDirection(true);
-
-  return result;  
-}
-
-
+*/
 
 byte MPUHardwareRead(unsigned int offset) {
 
@@ -707,34 +728,34 @@ byte MPUHardwareRead(unsigned int offset) {
     // For Display Reads we use shadow Display RAM
     // so we don't have to hit the bus
     if (!DisplayUseShadowVariables) {
-//      return ReadDisplay1(offset);
+//      return ReadDisplay(offset);
     }
     return DisplayLowPageStartAddress[offset-0x3800];
   } else if (offset>=DISPLAY_RAM_UPPER_PAGE_START && offset<=DISPLAY_RAM_UPPER_PAGE_END) {
     // For Display Reads we use shadow Display RAM
     // so we don't have to hit the bus
     if (!DisplayUseShadowVariables) {
-//      return ReadDisplay1(offset);
+//      return ReadDisplay(offset);
     }
     return DisplayHighPageStartAddress[offset-0x3A00];
   } else if (offset==WPC_DMD_LOW_PAGE) {
     if (!DisplayUseShadowVariables) {
-      DisplayLowPage = ReadDisplay(offset);
+//      DisplayLowPage = ReadDisplay(offset);
     }
     return DisplayLowPage;
   } else if (offset==WPC_DMD_HIGH_PAGE) {
     if (!DisplayUseShadowVariables) {
-      DisplayHighPage = ReadDisplay(offset);
+//      DisplayHighPage = ReadDisplay(offset);
     }
     return DisplayHighPage;
   } else if (offset==WPC_DMD_ACTIVE_PAGE) {
     if (!DisplayUseShadowVariables) {
-      DisplayNextActivePage = ReadDisplay(offset);
+//      DisplayNextActivePage = ReadDisplay(offset);
     }
     return DisplayNextActivePage;
   } else if (offset==WPC_DMD_SCANLINE) {
     if (!DisplayUseShadowVariables) {
-      DisplayCurrentScanline = ReadDisplay(offset);
+      DisplayCurrentScanline = ReadDisplayRegister(offset)&0x80;
     }
     if (DisplayCurrentScanline & WPC_FIRQ_CLEAR_BIT) ASICFirqSourceDmd(true);
     return DisplayCurrentScanline;
