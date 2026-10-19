@@ -395,6 +395,7 @@ void RPU_WPC_DisplayTextWithLogo(const char *message) {
     for (int count=0; count<512; count++) {
         WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
     }
+
 }
 
 

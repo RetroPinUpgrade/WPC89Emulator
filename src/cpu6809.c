@@ -1,46 +1,49 @@
+#include "stdio.h"
 #include "cpu6809.h"
+#include "mpu89.h"
 
-void (*CPUMemoryWrite)(uint16_t, uint8_t);
-uint8_t (*CPUMemoryRead)(uint16_t);
-uint16_t CPUTickCount;
 
-uint8_t CPUirqPending = false;
-uint8_t CPUfirqPending = false;
-uint8_t CPUmissedIRQ = 0;
-uint8_t CPUmissedFIRQ = 0;
+bool WPCSCPUWriteToLog = false;
 
-uint8_t CPUirqCount = 0;
-uint8_t CPUfirqCount = 0;
-uint8_t CPUnmiCount = 0;
 
-uint8_t regA = 0;
-uint8_t regB = 0;
-uint16_t regX = 0;
-uint16_t regY = 0;
-uint16_t regU = 0;
-uint16_t regS = 0;
-uint8_t regCC = 0;
-uint16_t regPC = 0;
-uint8_t regDP = 0;
+static uint16_t WPCSCPUTickCount;
+static uint8_t WPCSCPUirqPending = false;
+static uint8_t WPCSCPUfirqPending = false;
+static uint8_t WPCSCPUmissedIRQ = 0;
+static uint8_t WPCSCPUmissedFIRQ = 0;
 
-uint8_t F_CARRY = 1;
-uint8_t F_OVERFLOW = 2;
-uint8_t F_ZERO = 4;
-uint8_t F_NEGATIVE = 8;
-uint8_t F_IRQMASK = 16;
-uint8_t F_HALFCARRY = 32;
-uint8_t F_FIRQMASK = 64;
-uint8_t F_ENTIRE = 128;
+static uint8_t WPCSCPUirqCount = 0;
+static uint8_t WPCSCPUfirqCount = 0;
+static uint8_t WPCSCPUnmiCount = 0;
 
-uint16_t vecRESET = 0xFFFE;
-uint16_t vecFIRQ = 0xFFF6;
-uint16_t vecIRQ = 0xFFF8;
-uint16_t vecNMI = 0xFFFC;
-uint16_t vecSWI = 0xFFFA;
-uint16_t vecSWI2 = 0xFFF4;
-uint16_t vecSWI3 = 0xFFF2;
+static uint8_t WPCSCPUregA = 0;
+static uint8_t WPCSCPUregB = 0;
+static uint16_t WPCSCPUregX = 0;
+static uint16_t WPCSCPUregY = 0;
+static uint16_t WPCSCPUregU = 0;
+static uint16_t WPCSCPUregS = 0;
+static uint8_t WPCSCPUregCC = 0;
+static uint16_t WPCSCPUregPC = 0;
+static uint8_t WPCSCPUregDP = 0;
 
-uint8_t cycles[] = {
+static uint8_t WPCSCPU_F_CARRY = 1;
+static uint8_t WPCSCPU_F_OVERFLOW = 2;
+static uint8_t WPCSCPU_F_ZERO = 4;
+static uint8_t WPCSCPU_F_NEGATIVE = 8;
+static uint8_t WPCSCPU_F_IRQMASK = 16;
+static uint8_t WPCSCPU_F_HALFCARRY = 32;
+static uint8_t WPCSCPU_F_FIRQMASK = 64;
+static uint8_t WPCSCPU_F_ENTIRE = 128;
+
+static uint16_t WPCSCPUvecRESET = 0xFFFE;
+static uint16_t WPCSCPUvecFIRQ = 0xFFF6;
+static uint16_t WPCSCPUvecIRQ = 0xFFF8;
+static uint16_t WPCSCPUvecNMI = 0xFFFC;
+static uint16_t WPCSCPUvecSWI = 0xFFFA;
+static uint16_t WPCSCPUvecSWI2 = 0xFFF4;
+static uint16_t WPCSCPUvecSWI3 = 0xFFF2;
+
+static uint8_t WPCSCPUCycles[] = {
   6, 0, 0, 6, 6, 0, 6, 6, 6, 6, 6, 0, 6, 6, 3, 6, /* 00-0F */
   1, 1, 2, 2, 0, 0, 5, 9, 0, 2, 3, 0, 3, 2, 8, 7, /* 10-1F */
   3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, /* 20-2F */
@@ -59,7 +62,7 @@ uint8_t cycles[] = {
   5, 5, 5, 7, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6  /* F0-FF */
 };
 
-uint8_t cycles2[] = {
+static uint8_t WPCSCPUCycles2[] = {
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 00-0F */
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 10-1F */
   0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, /* 20-2F */
@@ -78,7 +81,7 @@ uint8_t cycles2[] = {
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 7  /* F0-FF */
 };
 
-uint8_t flagsNZ[] = {
+static uint8_t flagsNZ[] = {
   4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 00-0F */
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 10-1F */
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 20-2F */
@@ -98,349 +101,319 @@ uint8_t flagsNZ[] = {
 };
 
 
-void _executeNmi();
-void _executeFirq();
-void _executeIrq();
+void WPCSCPU_executeNmi();
+void WPCSCPU_executeFirq();
+void WPCSCPU_executeIrq();
 
-void setV8(uint16_t a, uint16_t b, uint16_t r);
-void setV16(uint32_t a, uint32_t b, uint32_t r);
-uint16_t getD();
-void setD(uint16_t v);
-void PUSHB(uint8_t b);
-void PUSHW(uint16_t b);
-void PUSHBU(uint8_t b);
-void PUSHWU(uint16_t b);
-uint8_t PULLB();
-uint16_t PULLW();
-uint8_t PULLBU();
-uint16_t PULLWU();
-void PSHS(uint8_t ucTemp);
-void PSHU(uint8_t ucTemp);
-void PULS(uint8_t ucTemp);
-void PULU(uint8_t ucTemp);
-uint16_t getPostByteRegister(uint8_t ucPostByte);
-void setPostByteRegister(uint8_t ucPostByte, uint16_t v);
-void TFREXG(uint8_t ucPostByte, uint8_t bExchange);
-int16_t signed5bit(uint8_t x);
-int16_t signed8(uint16_t x);
-int16_t signed16(uint16_t x);
-uint8_t fetch();
-uint16_t fetch16();
-uint16_t ReadWord(uint16_t addr);
-void WriteWord(uint16_t addr, uint16_t v);
-uint16_t PostByte();
-void flagsNZ16(uint16_t inputWord);
-uint8_t oINC(uint8_t b);
-uint8_t oDEC(uint8_t b);
-uint8_t oSUB(uint8_t b, uint8_t v);
-uint16_t oSUB16(uint16_t b, uint16_t v);
-uint8_t oADD(uint8_t b, uint8_t v);
-uint16_t oADD16(uint16_t b, uint16_t v);
-uint8_t oADC(uint8_t b, uint8_t v);
-uint8_t oSBC(uint8_t b, uint8_t v);
-uint8_t oCMP(uint8_t b, uint8_t v);
-uint16_t oCMP16(uint16_t b, uint16_t v);
-uint8_t oNEG(uint8_t b);
-uint8_t oLSR(uint8_t b);
-uint8_t oASR(uint8_t b);
-uint8_t oASL(uint8_t b);
-uint8_t oROL(uint8_t b);
-uint8_t oROR(uint8_t b);
-uint8_t oEOR(uint8_t b, uint8_t v);
-uint8_t oOR(uint8_t b, uint8_t v);
-uint8_t oAND(uint8_t b, uint8_t v);
-uint8_t oCOM(uint8_t b);
-uint16_t dpadd();
-
-
-bool CPUSetCallbacks(void (*memoryWriteFunction)(uint16_t, uint8_t), uint8_t (*memoryReadFunction)(uint16_t)) {
-  CPUMemoryWrite = memoryWriteFunction;
-  CPUMemoryRead = memoryReadFunction;
-
-  CPUTickCount = 0;
-
-  CPUirqPending = false;
-  CPUfirqPending = false;
-  CPUmissedIRQ = 0;
-  CPUmissedFIRQ = 0;
-
-  CPUirqCount = 0;
-  CPUfirqCount = 0;
-  CPUnmiCount = 0;
-
-  regA = 0;
-  regB = 0;
-  regX = 0;
-  regY = 0;
-  regU = 0;
-  regS = 0;
-  regCC = 0;
-  regPC = 0;
-  regDP = 0;
-  return true;
-}
-
+static void setV8(uint16_t a, uint16_t b, uint16_t r);
+static void setV16(uint32_t a, uint32_t b, uint32_t r);
+static uint16_t getD();
+static void setD(uint16_t v);
+static void PUSHB(uint8_t b);
+static void PUSHW(uint16_t b);
+static void PUSHBU(uint8_t b);
+static void PUSHWU(uint16_t b);
+static uint8_t PULLB();
+static uint16_t PULLW();
+static uint8_t PULLBU();
+static uint16_t PULLWU();
+static void PSHS(uint8_t ucTemp);
+static void PSHU(uint8_t ucTemp);
+static void PULS(uint8_t ucTemp);
+static void PULU(uint8_t ucTemp);
+static uint16_t getPostByteRegister(uint8_t ucPostByte);
+static void setPostByteRegister(uint8_t ucPostByte, uint16_t v);
+static void TFREXG(uint8_t ucPostByte, uint8_t bExchange);
+static int16_t signed5bit(uint8_t x);
+static int16_t signed8(uint16_t x);
+static int16_t signed16(uint16_t x);
+static uint8_t fetch();
+static uint16_t fetch16();
+static uint16_t ReadWord(uint16_t addr);
+static void WriteWord(uint16_t addr, uint16_t v);
+static uint16_t PostByte();
+static void flagsNZ16(uint16_t inputWord);
+static uint8_t oINC(uint8_t b);
+static uint8_t oDEC(uint8_t b);
+static uint8_t oSUB(uint8_t b, uint8_t v);
+static uint16_t oSUB16(uint16_t b, uint16_t v);
+static uint8_t oADD(uint8_t b, uint8_t v);
+static uint16_t oADD16(uint16_t b, uint16_t v);
+static uint8_t oADC(uint8_t b, uint8_t v);
+static uint8_t oSBC(uint8_t b, uint8_t v);
+static uint8_t oCMP(uint8_t b, uint8_t v);
+static uint16_t oCMP16(uint16_t b, uint16_t v);
+static uint8_t oNEG(uint8_t b);
+static uint8_t oLSR(uint8_t b);
+static uint8_t oASR(uint8_t b);
+static uint8_t oASL(uint8_t b);
+static uint8_t oROL(uint8_t b);
+static uint8_t oROR(uint8_t b);
+static uint8_t oEOR(uint8_t b, uint8_t v);
+static uint8_t oOR(uint8_t b, uint8_t v);
+static uint8_t oAND(uint8_t b, uint8_t v);
+static uint8_t oCOM(uint8_t b);
+static uint16_t dpadd();
 
 // set overflow flag
-void setV8(uint16_t a, uint16_t b, uint16_t r) {
-  regCC |= ((a ^ b ^ r ^ (r >> 1)) & 0x80) >> 6;
+static void setV8(uint16_t a, uint16_t b, uint16_t r) {
+  WPCSCPUregCC |= ((a ^ b ^ r ^ (r >> 1)) & 0x80) >> 6;
 }
 
 // set overflow flag
-void setV16(uint32_t a, uint32_t b, uint32_t r) {
-  regCC |= ((a ^ b ^ r ^ (r >> 1)) & 0x8000) >> 14;
+static void setV16(uint32_t a, uint32_t b, uint32_t r) {
+  WPCSCPUregCC |= ((a ^ b ^ r ^ (r >> 1)) & 0x8000) >> 14;
 }
 
 uint16_t getD() {
-  return ((uint16_t)regA << 8) + regB;
+  return ((uint16_t)WPCSCPUregA << 8) + WPCSCPUregB;
 }
 
-void setD(uint16_t v) {
-  regA = (v >> 8) & 0xff;
-  regB = v & 0xff;
+static void setD(uint16_t v) {
+  WPCSCPUregA = (v >> 8) & 0xff;
+  WPCSCPUregB = v & 0xff;
 }
 
-void PUSHB(uint8_t b) {
-  regS = (regS - 1) & 0xFFFF;
-  CPUMemoryWrite(regS, b & 0xFF);
+static void PUSHB(uint8_t b) {
+  WPCSCPUregS = (WPCSCPUregS - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregS, b & 0xFF);
 }
 
-void PUSHW(uint16_t b) {
-  regS = (regS - 1) & 0xFFFF;
-  CPUMemoryWrite(regS, b & 0xFF);
-  regS = (regS - 1) & 0xFFFF;
-  CPUMemoryWrite(regS, (b >> 8) & 0xFF);
+static void PUSHW(uint16_t b) {
+  WPCSCPUregS = (WPCSCPUregS - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregS, b & 0xFF);
+  WPCSCPUregS = (WPCSCPUregS - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregS, (b >> 8) & 0xFF);
 }
 
-void PUSHBU(uint8_t b) {
-  regU = (regU - 1) & 0xFFFF;
-  CPUMemoryWrite(regU, b & 0xFF);
+static void PUSHBU(uint8_t b) {
+  WPCSCPUregU = (WPCSCPUregU - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregU, b & 0xFF);
 }
 
-void PUSHWU(uint16_t b) {
-  regU = (regU - 1) & 0xFFFF;
-  CPUMemoryWrite(regU, b & 0xFF);
-  regU = (regU - 1) & 0xFFFF;
-  CPUMemoryWrite(regU, (b >> 8) & 0xFF);
+static void PUSHWU(uint16_t b) {
+  WPCSCPUregU = (WPCSCPUregU - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregU, b & 0xFF);
+  WPCSCPUregU = (WPCSCPUregU - 1) & 0xFFFF;
+  MPUWrite8(WPCSCPUregU, (b >> 8) & 0xFF);
 }
 
-uint8_t PULLB() {
-  uint8_t tempuint8_t = CPUMemoryRead(regS);
-  regS += 1;
+static uint8_t PULLB() {
+  uint8_t tempuint8_t = MPURead8(WPCSCPUregS);
+  WPCSCPUregS += 1;
   return tempuint8_t;
 }
 
-uint16_t PULLW() {
-  uint16_t tempW = (CPUMemoryRead(regS)<<8) + CPUMemoryRead(regS+1);
-  regS += 2;
+static uint16_t PULLW() {
+  uint16_t tempW = (MPURead8(WPCSCPUregS)<<8) + MPURead8(WPCSCPUregS+1);
+  WPCSCPUregS += 2;
   return tempW;
 }
 
-uint8_t PULLBU() {
-  uint8_t tempuint8_t = CPUMemoryRead(regU);
-  regU += 1;
+static uint8_t PULLBU() {
+  uint8_t tempuint8_t = MPURead8(WPCSCPUregU);
+  WPCSCPUregU += 1;
   return tempuint8_t;
 }
 
-uint16_t PULLWU() {
-  uint16_t tempW = (CPUMemoryRead(regU)<<8) + CPUMemoryRead(regU+1);
-  regU += 2;
+static uint16_t PULLWU() {
+  uint16_t tempW = (MPURead8(WPCSCPUregU)<<8) + MPURead8(WPCSCPUregU+1);
+  WPCSCPUregU += 2;
   return tempW;
 }
 
 //Push A, B, CC, DP, D, X, Y, U, or PC onto hardware stack
-void PSHS(uint8_t ucTemp) {
+static void PSHS(uint8_t ucTemp) {
   uint8_t i = 0;
   if (ucTemp & 0x80) {
-    PUSHW(regPC);
+    PUSHW(WPCSCPUregPC);
     i += 2;
   }
   if (ucTemp & 0x40) {
-    PUSHW(regU);
+    PUSHW(WPCSCPUregU);
     i += 2;
   }
   if (ucTemp & 0x20) {
-    PUSHW(regY);
+    PUSHW(WPCSCPUregY);
     i += 2;
   }
   if (ucTemp & 0x10) {
-    PUSHW(regX);
+    PUSHW(WPCSCPUregX);
     i += 2;
   }
   if (ucTemp & 0x8) {
-    PUSHB(regDP);
+    PUSHB(WPCSCPUregDP);
     i++;
   }
   if (ucTemp & 0x4) {
-    PUSHB(regB);
+    PUSHB(WPCSCPUregB);
     i++;
   }
   if (ucTemp & 0x2) {
-    PUSHB(regA);
+    PUSHB(WPCSCPUregA);
     i++;
   }
   if (ucTemp & 0x1) {
-    PUSHB(regCC);
+    PUSHB(WPCSCPUregCC);
     i++;
   }
-  CPUTickCount += i; //timing
+  WPCSCPUTickCount += i; //timing
 }
 
 //Push A, B, CC, DP, D, X, Y, S, or PC onto user stack
-void PSHU(uint8_t ucTemp) {
+static void PSHU(uint8_t ucTemp) {
   uint8_t i = 0;
   if (ucTemp & 0x80) {
-    PUSHWU(regPC);
+    PUSHWU(WPCSCPUregPC);
     i += 2;
   }
   if (ucTemp & 0x40) {
-    PUSHWU(regS);
+    PUSHWU(WPCSCPUregS);
     i += 2;
   }
   if (ucTemp & 0x20) {
-    PUSHWU(regY);
+    PUSHWU(WPCSCPUregY);
     i += 2;
   }
   if (ucTemp & 0x10) {
-    PUSHWU(regX);
+    PUSHWU(WPCSCPUregX);
     i += 2;
   }
   if (ucTemp & 0x8) {
-    PUSHBU(regDP);
+    PUSHBU(WPCSCPUregDP);
     i++;
   }
   if (ucTemp & 0x4) {
-    PUSHBU(regB);
+    PUSHBU(WPCSCPUregB);
     i++;
   }
   if (ucTemp & 0x2) {
-    PUSHBU(regA);
+    PUSHBU(WPCSCPUregA);
     i++;
   }
   if (ucTemp & 0x1) {
-    PUSHBU(regCC);
+    PUSHBU(WPCSCPUregCC);
     i++;
   }
-  CPUTickCount += i; //timing
+  WPCSCPUTickCount += i; //timing
 }
 
 //Pull A, B, CC, DP, D, X, Y, U, or PC from hardware stack
-void PULS(uint8_t ucTemp) {
+static void PULS(uint8_t ucTemp) {
   uint8_t i = 0;
   if (ucTemp & 0x1) {
-    regCC = PULLB();
+    WPCSCPUregCC = PULLB();
     i++;
   }
   if (ucTemp & 0x2) {
-    regA = PULLB();
+    WPCSCPUregA = PULLB();
     i++;
   }
   if (ucTemp & 0x4) {
-    regB = PULLB();
+    WPCSCPUregB = PULLB();
     i++;
   }
   if (ucTemp & 0x8) {
-    regDP = PULLB();
+    WPCSCPUregDP = PULLB();
     i++;
   }
   if (ucTemp & 0x10) {
-    regX = PULLW();
+    WPCSCPUregX = PULLW();
     i += 2;
   }
   if (ucTemp & 0x20) {
-    regY = PULLW();
+    WPCSCPUregY = PULLW();
     i += 2;
   }
   if (ucTemp & 0x40) {
-    regU = PULLW();
+    WPCSCPUregU = PULLW();
     i += 2;
   }
   if (ucTemp & 0x80) {
-    regPC = PULLW();
+    WPCSCPUregPC = PULLW();
     i += 2;
   }
-  CPUTickCount += i; //timing
+  WPCSCPUTickCount += i; //timing
 }
 
 //Pull A, B, CC, DP, D, X, Y, S, or PC from hardware stack
-void PULU(uint8_t ucTemp) {
+static void PULU(uint8_t ucTemp) {
   uint8_t i = 0;
   if (ucTemp & 0x1) {
-    regCC = PULLBU();
+    WPCSCPUregCC = PULLBU();
     i++;
   }
   if (ucTemp & 0x2) {
-    regA = PULLBU();
+    WPCSCPUregA = PULLBU();
     i++;
   }
   if (ucTemp & 0x4) {
-    regB = PULLBU();
+    WPCSCPUregB = PULLBU();
     i++;
   }
   if (ucTemp & 0x8) {
-    regDP = PULLBU();
+    WPCSCPUregDP = PULLBU();
     i++;
   }
   if (ucTemp & 0x10) {
-    regX = PULLWU();
+    WPCSCPUregX = PULLWU();
     i += 2;
   }
   if (ucTemp & 0x20) {
-    regY = PULLWU();
+    WPCSCPUregY = PULLWU();
     i += 2;
   }
   if (ucTemp & 0x40) {
-    regS = PULLWU();
+    WPCSCPUregS = PULLWU();
     i += 2;
   }
   if (ucTemp & 0x80) {
-    regPC = PULLWU();
+    WPCSCPUregPC = PULLWU();
     i += 2;
   }
-  CPUTickCount += i; //timing
+  WPCSCPUTickCount += i; //timing
 }
 
 
-void _executeNmi() {
-  PUSHW(regPC);
-  PUSHW(regU);
-  PUSHW(regY);
-  PUSHW(regX);
-  PUSHB(regDP);
-  PUSHB(regB);
-  PUSHB(regA);
-  regCC |= F_ENTIRE;
-  PUSHB(regCC);
-  regCC |= F_IRQMASK | F_FIRQMASK;
-  regPC = ReadWord(vecNMI);
-  CPUTickCount += 19;
+void WPCSCPU_executeNmi() {
+  PUSHW(WPCSCPUregPC);
+  PUSHW(WPCSCPUregU);
+  PUSHW(WPCSCPUregY);
+  PUSHW(WPCSCPUregX);
+  PUSHB(WPCSCPUregDP);
+  PUSHB(WPCSCPUregB);
+  PUSHB(WPCSCPUregA);
+  WPCSCPUregCC |= WPCSCPU_F_ENTIRE;
+  PUSHB(WPCSCPUregCC);
+  WPCSCPUregCC |= WPCSCPU_F_IRQMASK | WPCSCPU_F_FIRQMASK;
+  WPCSCPUregPC = ReadWord(WPCSCPUvecNMI);
+  WPCSCPUTickCount += 19;
 }
 
-void _executeFirq() {
-  // Later games might call this from the high-performance timer
-  regCC &= ~F_ENTIRE;
-  PUSHW(regPC);
-  PUSHB(regCC);
+void WPCSCPU_executeFirq() {
+  WPCSCPUregCC &= ~WPCSCPU_F_ENTIRE;
+  PUSHW(WPCSCPUregPC);
+  PUSHB(WPCSCPUregCC);
 
-  regCC |= F_IRQMASK | F_FIRQMASK;
-  regPC = ReadWord(vecFIRQ);
-  CPUTickCount += 10;
+  WPCSCPUregCC |= WPCSCPU_F_IRQMASK | WPCSCPU_F_FIRQMASK;
+  WPCSCPUregPC = ReadWord(WPCSCPUvecFIRQ);
+  WPCSCPUTickCount += 10;
 }
 
-void _executeIrq() {
-  regCC |= F_ENTIRE;
-  PUSHW(regPC);
-  PUSHW(regU);
-  PUSHW(regY);
-  PUSHW(regX);
-  PUSHB(regDP);
-  PUSHB(regB);
-  PUSHB(regA);
-  PUSHB(regCC);
+void WPCSCPU_executeIrq() {
+  WPCSCPUregCC |= WPCSCPU_F_ENTIRE;
+  PUSHW(WPCSCPUregPC);
+  PUSHW(WPCSCPUregU);
+  PUSHW(WPCSCPUregY);
+  PUSHW(WPCSCPUregX);
+  PUSHB(WPCSCPUregDP);
+  PUSHB(WPCSCPUregB);
+  PUSHB(WPCSCPUregA);
+  PUSHB(WPCSCPUregCC);
 
-  regCC |= F_IRQMASK;
-  regPC = ReadWord(vecIRQ);
-  CPUTickCount += 19;
+  WPCSCPUregCC |= WPCSCPU_F_IRQMASK;
+  WPCSCPUregPC = ReadWord(WPCSCPUvecIRQ);
+  WPCSCPUTickCount += 19;
 }
 
 uint16_t getPostByteRegister(uint8_t ucPostByte) {
@@ -448,23 +421,23 @@ uint16_t getPostByteRegister(uint8_t ucPostByte) {
     case 0x00:
       return getD();
     case 0x1:
-      return regX;
+      return WPCSCPUregX;
     case 0x2:
-      return regY;
+      return WPCSCPUregY;
     case 0x3:
-      return regU;
+      return WPCSCPUregU;
     case 0x4:
-      return regS;
+      return WPCSCPUregS;
     case 0x5:
-      return regPC;
+      return WPCSCPUregPC;
     case 0x8:
-      return regA;
+      return WPCSCPUregA;
     case 0x9:
-      return regB;
+      return WPCSCPUregB;
     case 0xA:
-      return regCC;
+      return WPCSCPUregCC;
     case 0xB:
-      return regDP;
+      return WPCSCPUregDP;
     default:
       /* illegal */
       //throw new Error('getPBR_INVALID_' + ucPostByte);
@@ -473,38 +446,38 @@ uint16_t getPostByteRegister(uint8_t ucPostByte) {
   return 0;
 }
 
-void setPostByteRegister(uint8_t ucPostByte, uint16_t v) {
-  /* Get destination register */
+static void setPostByteRegister(uint8_t ucPostByte, uint16_t v) {
+  /* Get destination WPCSCPUregister */
   switch (ucPostByte & 0xF) {
     case 0x00:
       setD(v);
       return;
     case 0x1:
-      regX = v;
+      WPCSCPUregX = v;
       return;
     case 0x2:
-      regY = v;
+      WPCSCPUregY = v;
       return;
     case 0x3:
-      regU = v;
+      WPCSCPUregU = v;
       return;
     case 0x4:
-      regS = v;
+      WPCSCPUregS = v;
       return;
     case 0x5:
-      regPC = v;
+      WPCSCPUregPC = v;
       return;
     case 0x8:
-      regA = v & 0xFF;
+      WPCSCPUregA = v & 0xFF;
       return;
     case 0x9:
-      regB = v & 0xFF;
+      WPCSCPUregB = v & 0xFF;
       return;
     case 0xA:
-      regCC = v & 0xFF;
+      WPCSCPUregCC = v & 0xFF;
       return;
     case 0xB:
-      regDP = v & 0xFF;
+      WPCSCPUregDP = v & 0xFF;
       return;
     default:
       /* illegal */
@@ -513,8 +486,8 @@ void setPostByteRegister(uint8_t ucPostByte, uint16_t v) {
   }
 }
 
-// Transfer or exchange two registers.
-void TFREXG(uint8_t ucPostByte, uint8_t bExchange) {
+// Transfer or exchange two WPCSCPUregisters.
+static void TFREXG(uint8_t ucPostByte, uint8_t bExchange) {
   uint16_t ucTemp = ucPostByte & 0x88;
   if (ucTemp == 0x80 || ucTemp == 0x08) {
     //throw new Error('TFREXG_ERROR_MIXING_8_AND_16BIT_REGISTER!');
@@ -528,40 +501,40 @@ void TFREXG(uint8_t ucPostByte, uint8_t bExchange) {
   setPostByteRegister(ucPostByte, ucTemp);
 }
 
-int16_t signed5bit(uint8_t x) {
+static int16_t signed5bit(uint8_t x) {
   return x > 0xF ? x - 0x20 : x;
 }
 
-int16_t signed8(uint16_t x) {
+static int16_t signed8(uint16_t x) {
   return x > 0x7F ? x - 0x100 : x;
 }
 
-int16_t signed16(uint16_t x) {
+static int16_t signed16(uint16_t x) {
   return x > 0x7FFF ? x - 0x10000 : x;
 }
 
-uint8_t fetch() {
-  uint8_t tempuint8_t = CPUMemoryRead(regPC);
-  regPC += 1;
+static uint8_t fetch() {
+  uint8_t tempuint8_t = MPURead8(WPCSCPUregPC);
+  WPCSCPUregPC += 1;
   return tempuint8_t;
 }
 
-uint16_t fetch16() {
-  uint16_t v1 = CPUMemoryRead(regPC);
-  uint16_t v2 = CPUMemoryRead(regPC+1);
-  regPC += 2;
+static uint16_t fetch16() {
+  uint16_t v1 = MPURead8(WPCSCPUregPC);
+  uint16_t v2 = MPURead8(WPCSCPUregPC+1);
+  WPCSCPUregPC += 2;
   return (v1 << 8) + v2;
 }
 
-uint16_t ReadWord(uint16_t addr) {
-  uint16_t v1 = CPUMemoryRead(addr);
-  uint16_t v2 = CPUMemoryRead((addr + 1) & 0xFFFF);
+static uint16_t ReadWord(uint16_t addr) {
+  uint16_t v1 = MPURead8(addr);
+  uint16_t v2 = MPURead8((addr + 1) & 0xFFFF);
   return (v1 << 8) + v2;
 }
 
-void WriteWord(uint16_t addr, uint16_t v) {
-  CPUMemoryWrite(addr, (v >> 8) & 0xff);
-  CPUMemoryWrite((addr + 1) & 0xFFFF, v & 0xff);
+static void WriteWord(uint16_t addr, uint16_t v) {
+  MPUWrite8(addr, (v >> 8) & 0xff);
+  MPUWrite8((addr + 1) & 0xFFFF, v & 0xff);
 }
 
 //PURPOSE: Calculate the EA for INDEXING addressing mode.
@@ -570,28 +543,28 @@ void WriteWord(uint16_t addr, uint16_t v) {
 // ±4-bit (-16 to +15)
 // ±7-bit (-128 to +127)
 // ±15-bit (-32768 to +32767)
-uint16_t PostByte() {
+static uint16_t PostByte() {
   uint8_t INDIRECT_FIELD = 0x10;
   uint8_t REGISTER_FIELD = 0x60;
   uint8_t COMPLEXTYPE_FIELD = 0x80;
   uint8_t ADDRESSINGMODE_FIELD = 0x0F;
 
   uint8_t postByte = fetch();
-  uint16_t registerField = 0;
-  // Isolate register is used for the indexed operation
+  uint16_t WPCSCPUregisterField = 0;
+  // Isolate WPCSCPUregister is used for the indexed operation
   // see Table 3-6. Indexed Addressing PostByte Register
   switch (postByte & REGISTER_FIELD) {
     case 0x00:
-      registerField = regX;
+      WPCSCPUregisterField = WPCSCPUregX;
       break;
     case 0x20:
-      registerField = regY;
+      WPCSCPUregisterField = WPCSCPUregY;
       break;
     case 0x40:
-      registerField = regU;
+      WPCSCPUregisterField = WPCSCPUregU;
       break;
     case 0x60:
-      registerField = regS;
+      WPCSCPUregisterField = WPCSCPUregS;
       break;
     default:
       //throw new Error('INVALID_ADDRESS_PB');
@@ -604,68 +577,68 @@ uint16_t PostByte() {
     // Complex stuff
     switch (postByte & ADDRESSINGMODE_FIELD) {
       case 0x00: // R+
-        EA = registerField;
-        xchg = registerField + 1;
-        CPUTickCount += 2;
+        EA = WPCSCPUregisterField;
+        xchg = WPCSCPUregisterField + 1;
+        WPCSCPUTickCount += 2;
         break;
       case 0x01: // R++
-        EA = registerField;
-        xchg = registerField + 2;
-        CPUTickCount += 3;
+        EA = WPCSCPUregisterField;
+        xchg = WPCSCPUregisterField + 2;
+        WPCSCPUTickCount += 3;
         break;
       case 0x02: // -R
-        xchg = registerField - 1;
+        xchg = WPCSCPUregisterField - 1;
         EA = xchg;
-        CPUTickCount += 2;
+        WPCSCPUTickCount += 2;
         break;
       case 0x03: // --R
-        xchg = registerField - 2;
+        xchg = WPCSCPUregisterField - 2;
         EA = xchg;
-        CPUTickCount += 3;
+        WPCSCPUTickCount += 3;
         break;
       case 0x04: // EA = R + 0 OFFSET
-        EA = registerField;
+        EA = WPCSCPUregisterField;
         break;
       case 0x05: // EA = R + REGB OFFSET
-        EA = registerField + signed8(regB);
-        CPUTickCount += 1;
+        EA = WPCSCPUregisterField + signed8(WPCSCPUregB);
+        WPCSCPUTickCount += 1;
         break;
       case 0x06: // EA = R + REGA OFFSET
-        EA = registerField + signed8(regA);
-        CPUTickCount += 1;
+        EA = WPCSCPUregisterField + signed8(WPCSCPUregA);
+        WPCSCPUTickCount += 1;
         break;
       // case 0x07 is ILLEGAL
       case 0x08: // EA = R + 7bit OFFSET
-        EA = registerField + signed8(fetch());
-        CPUTickCount += 1;
+        EA = WPCSCPUregisterField + signed8(fetch());
+        WPCSCPUTickCount += 1;
         break;
       case 0x09: // EA = R + 15bit OFFSET
-        EA = registerField + signed16(fetch16());
-        CPUTickCount += 4;
+        EA = WPCSCPUregisterField + signed16(fetch16());
+        WPCSCPUTickCount += 4;
         break;
       // case 0x0A is ILLEGAL
       case 0x0B: // EA = R + D OFFSET
-        EA = registerField + getD();
-        CPUTickCount += 4;
+        EA = WPCSCPUregisterField + getD();
+        WPCSCPUTickCount += 4;
         break;
       case 0x0C: { // EA = PC + 7bit OFFSET
-        // NOTE: fetch increases regPC - so order is important!
+        // NOTE: fetch increases WPCSCPUregPC - so order is important!
         int16_t tempOffset = signed8(fetch());
-        EA = regPC + tempOffset;
-        CPUTickCount += 1;
+        EA = WPCSCPUregPC + tempOffset;
+        WPCSCPUTickCount += 1;
         break;
       }
       case 0x0D: { // EA = PC + 15bit OFFSET
-        // NOTE: fetch increases regPC - so order is important!
+        // NOTE: fetch increases WPCSCPUregPC - so order is important!
         int16_t word = signed16(fetch16());
-        EA = regPC + word;
-        CPUTickCount += 5;
+        EA = WPCSCPUregPC + word;
+        WPCSCPUTickCount += 5;
         break;
       }
       // case 0xE is ILLEGAL
       case 0x0F: // EA = ADDRESS
         EA = fetch16();
-        CPUTickCount += 5;
+        WPCSCPUTickCount += 5;
         break;
       default: {
         //uint8_t mode = postByte & ADDRESSINGMODE_FIELD;
@@ -684,29 +657,29 @@ uint16_t PostByte() {
       */
       // INDIRECT addressing
       EA = ReadWord(EA);
-      CPUTickCount += 3;
+      WPCSCPUTickCount += 3;
     }
   } else {
-    // Just a 5 bit signed offset + register, NO INDIRECT ADDRESS MODE
+    // Just a 5 bit signed offset + WPCSCPUregister, NO INDIRECT ADDRESS MODE
     int16_t suint8_t = signed5bit(postByte & 0x1F);
-    EA = registerField + suint8_t;
-    CPUTickCount += 1;
+    EA = WPCSCPUregisterField + suint8_t;
+    WPCSCPUTickCount += 1;
   }
 
   if (xchg != 0 ) {
     xchg &= 0xFFFF;
     switch (postByte & REGISTER_FIELD) {
       case 0:
-        regX = xchg;
+        WPCSCPUregX = xchg;
         break;
       case 0x20:
-        regY = xchg;
+        WPCSCPUregY = xchg;
         break;
       case 0x40:
-        regU = xchg;
+        WPCSCPUregU = xchg;
         break;
       case 0x60:
-        regS = xchg;
+        WPCSCPUregS = xchg;
         break;
       default:
         //throw new Error('PB_INVALID_XCHG_VALUE_' + postByte);
@@ -717,525 +690,513 @@ uint16_t PostByte() {
   return EA & 0xFFFF;
 }
 
-void flagsNZ16(uint16_t inputWord) {
-  regCC &= ~(F_ZERO | F_NEGATIVE);
+static void flagsNZ16(uint16_t inputWord) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE);
   if (inputWord == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
   if (inputWord & 0x8000) {
-    regCC |= F_NEGATIVE;
+    WPCSCPUregCC |= WPCSCPU_F_NEGATIVE;
   }
 }
 
 // ============= Operations
 
-uint8_t oINC(uint8_t b) {
+static uint8_t oINC(uint8_t b) {
   b = (b + 1) & 0xFF;
-  regCC &= ~(F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
+  WPCSCPUregCC |= flagsNZ[b];
   //Docs say:
   //V: Set if the original operand was 01111111
   if (b == 0x80) {
-    regCC |= F_OVERFLOW;
+    WPCSCPUregCC |= WPCSCPU_F_OVERFLOW;
   }
   return b;
 }
 
-uint8_t oDEC(uint8_t b) {
+static uint8_t oDEC(uint8_t b) {
   b = (b - 1) & 0xFF;
-  regCC &= ~(F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
+  WPCSCPUregCC |= flagsNZ[b];
   //Docs say:
   //V: Set if the original operand was 10000000
   if (b == 0x7f) {
-    regCC |= F_OVERFLOW;
+    WPCSCPUregCC |= WPCSCPU_F_OVERFLOW;
   }
   return b;
 }
 
-uint8_t oSUB(uint8_t b, uint8_t v) {
-  // Use a wider type to catch the borrow (bit 8)
-  uint16_t temp = (uint16_t)b - (uint16_t)v;
-  
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  
-  if (temp & 0x100) regCC |= F_CARRY; // Borrow occurred
-  
+static uint8_t oSUB(uint8_t b, uint8_t v) {
+  int16_t temp = b - v;
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
+  if (temp & 0x100) {
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
+  }
   setV8(b, v, temp);
-  uint8_t result = temp & 0xFF;
-  regCC |= flagsNZ[result];
-  
-  return result;
+  temp &= 0xFF;
+  WPCSCPUregCC |= flagsNZ[temp];
+  return temp;
 }
 
-uint16_t oSUB16(uint16_t b, uint16_t v) {
+static uint16_t oSUB16(uint16_t b, uint16_t v) {
   uint32_t temp = b - v;
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   if (temp & 0x8000) {
-    regCC |= F_NEGATIVE;
+    WPCSCPUregCC |= WPCSCPU_F_NEGATIVE;
   }
   if (temp & 0x10000) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   setV16(b, v, temp);
   temp &= 0xFFFF;
   if (temp == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
   return temp;
 }
 
-uint8_t oADD(uint8_t b, uint8_t v) {
+static uint8_t oADD(uint8_t b, uint8_t v) {
   int16_t temp = b + v;
-  regCC &= ~(F_HALFCARRY | F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  WPCSCPUregCC &= ~(WPCSCPU_F_HALFCARRY | WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   if (temp & 0x100) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   setV8(b, v, temp);
   if ((temp ^ b ^ v) & 0x10) {
-    regCC |= F_HALFCARRY;
+    WPCSCPUregCC |= WPCSCPU_F_HALFCARRY;
   }
   temp &= 0xFF;
-  regCC |= flagsNZ[temp];
+  WPCSCPUregCC |= flagsNZ[temp];
   return temp;
 }
 
-uint16_t oADD16(uint16_t b, uint16_t v) {
+static uint16_t oADD16(uint16_t b, uint16_t v) {
   uint32_t temp = b + v;
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   if (temp & 0x8000) {
-    regCC |= F_NEGATIVE;
+    WPCSCPUregCC |= WPCSCPU_F_NEGATIVE;
   }
   if (temp & 0x10000) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   setV16(b, v, temp);
   temp &= 0xFFFF;
   if (temp == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
   return temp;
 }
 
-
-uint8_t oADC(uint8_t b, uint8_t v) {
-  uint8_t carryIn = (regCC & F_CARRY) ? 1 : 0;
-  int16_t temp = b + v + carryIn;
-
-  regCC &= ~(F_HALFCARRY | F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-
-  if (temp & 0x100) regCC |= F_CARRY;
-  setV8(b, v, temp);
-
-  // Correct Half-Carry for 6809: reflects carry out of bit 3
-  if (((b & 0x0F) + (v & 0x0F) + carryIn) & 0x10) {
-    regCC |= F_HALFCARRY;
-  }
-
-  uint8_t final = temp & 0xFF;
-  regCC |= flagsNZ[final];
-  return final;
-}
-
-uint8_t oSBC(uint8_t b, uint8_t v) {
-  uint8_t borrowIn = (regCC & F_CARRY) ? 1 : 0;
-  uint16_t temp = (uint16_t)b - (uint16_t)v - borrowIn;
-  
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  
-  if (temp & 0x100) regCC |= F_CARRY; // Borrow occurred
-  
-  setV8(b, v, temp);
-  uint8_t result = temp & 0xFF;
-  regCC |= flagsNZ[result];
-  
-  return result;
-}
-
-uint8_t oCMP(uint8_t b, uint8_t v) {
-  int16_t temp = b - v;
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+static uint8_t oADC(uint8_t b, uint8_t v) {
+  int16_t temp = b + v + (WPCSCPUregCC & WPCSCPU_F_CARRY);
+  WPCSCPUregCC &= ~(WPCSCPU_F_HALFCARRY | WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   if (temp & 0x100) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
+  }
+  setV8(b, v, temp);
+  if ((temp ^ b ^ v) & 0x10) {
+    WPCSCPUregCC |= WPCSCPU_F_HALFCARRY;
+  }
+  temp &= 0xFF;
+  WPCSCPUregCC |= flagsNZ[temp];
+  return temp;
+}
+
+static uint8_t oSBC(uint8_t b, uint8_t v) {
+  int16_t temp = b - v - (WPCSCPUregCC & WPCSCPU_F_CARRY);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
+  if (temp & 0x100) {
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   setV8(b, v, temp);
   temp &= 0xFF;
-  regCC |= flagsNZ[temp];
+  WPCSCPUregCC |= flagsNZ[temp];
   return temp;
 }
 
-uint16_t oCMP16(uint16_t b, uint16_t v) {
+static uint8_t oCMP(uint8_t b, uint8_t v) {
+  int16_t temp = b - v;
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
+  if (temp & 0x100) {
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
+  }
+  setV8(b, v, temp);
+  temp &= 0xFF;
+  WPCSCPUregCC |= flagsNZ[temp];
+  return temp;
+}
+
+static uint16_t oCMP16(uint16_t b, uint16_t v) {
   uint32_t temp = b - v;
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   if ((temp & 0xFFFF) == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
   if (temp & 0x8000) {
-    regCC |= F_NEGATIVE;
+    WPCSCPUregCC |= WPCSCPU_F_NEGATIVE;
   }
   if (temp & 0x10000) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   setV16(b, v, temp);
   return temp;
 }
 
-
-uint8_t oNEG(uint8_t b) {
-  uint8_t original = b;
+static uint8_t oNEG(uint8_t b) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW | WPCSCPU_F_NEGATIVE);
   b = (0 - b) & 0xFF;
-  
-  regCC &= ~(F_CARRY | F_ZERO | F_OVERFLOW | F_NEGATIVE);
-  
-  // 6809 Rule: Carry is set if the operand was NOT zero
-  if (original != 0) regCC |= F_CARRY; 
-  if (b == 0x80) regCC |= F_OVERFLOW;
-  if (b == 0)    regCC |= F_ZERO;
-  if (b & 0x80)  regCC |= F_NEGATIVE;
-  
+  if (b == 0x80) {
+    WPCSCPUregCC |= WPCSCPU_F_OVERFLOW;
+  }
+  if (b == 0) {
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
+  }
+  if (b & 0x80) {
+    WPCSCPUregCC |= WPCSCPU_F_NEGATIVE | WPCSCPU_F_CARRY;
+  }
   return b;
 }
 
-uint8_t oLSR(uint8_t b) {
-  regCC &= ~(F_ZERO | F_CARRY | F_NEGATIVE);
-  if (b & F_CARRY) {
-    regCC |= F_CARRY;
+static uint8_t oLSR(uint8_t b) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE);
+  if (b & WPCSCPU_F_CARRY) {
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   b >>= 1;
   if (b == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
   return b;
 }
 
-uint8_t oASR(uint8_t b) {
-  regCC &= ~(F_ZERO | F_CARRY | F_NEGATIVE);
+static uint8_t oASR(uint8_t b) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE);
   if (b & 0x01) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   b = (b & 0x80) | (b >> 1);
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oASL(uint8_t b) {
+static uint8_t oASL(uint8_t b) {
   int16_t temp = b;
-  regCC &= ~(F_ZERO | F_CARRY | F_NEGATIVE | F_OVERFLOW);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   if (b & 0x80) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   b <<= 1;
   if ((b ^ temp) & 0x80) {
-    regCC |= F_OVERFLOW;
+    WPCSCPUregCC |= WPCSCPU_F_OVERFLOW;
   }
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oROL(uint8_t b) {
+static uint8_t oROL(uint8_t b) {
   int16_t temp = b;
-  uint8_t oldCarry = regCC & F_CARRY;
-  regCC &= ~(F_ZERO | F_CARRY | F_NEGATIVE | F_OVERFLOW);
+  uint8_t oldCarry = WPCSCPUregCC & WPCSCPU_F_CARRY;
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   if (b & 0x80) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   b = (b << 1) | oldCarry;
   if ((b ^ temp) & 0x80) {
-    regCC |= F_OVERFLOW;
+    WPCSCPUregCC |= WPCSCPU_F_OVERFLOW;
   }
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oROR(uint8_t b) {
-  uint8_t oldCarry = regCC & F_CARRY;
-  regCC &= ~(F_ZERO | F_CARRY | F_NEGATIVE);
+static uint8_t oROR(uint8_t b) {
+  uint8_t oldCarry = WPCSCPUregCC & WPCSCPU_F_CARRY;
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE);
   if (b & 0x01) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   }
   b = (b >> 1) | (oldCarry << 7);
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oEOR(uint8_t b, uint8_t v) {
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
+static uint8_t oEOR(uint8_t b, uint8_t v) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   b ^= v;
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oOR(uint8_t b, uint8_t v) {
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
+static uint8_t oOR(uint8_t b, uint8_t v) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   b |= v;
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oAND(uint8_t b, uint8_t v) {
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
+static uint8_t oAND(uint8_t b, uint8_t v) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   b &= v;
   b &= 0xFF;
-  regCC |= flagsNZ[b];
+  WPCSCPUregCC |= flagsNZ[b];
   return b;
 }
 
-uint8_t oCOM(uint8_t b) {
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
+static uint8_t oCOM(uint8_t b) {
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
   b ^= 0xFF;
   b &= 0xFF;
-  regCC |= flagsNZ[b];
-  regCC |= F_CARRY;
+  WPCSCPUregCC |= flagsNZ[b];
+  WPCSCPUregCC |= WPCSCPU_F_CARRY;
   return b;
 }
 
 //----common
-uint16_t dpadd() {
+static uint16_t dpadd() {
   //direct page + 8bit index
-  return (regDP << 8) + fetch();
+  return (WPCSCPUregDP << 8) + fetch();
 }
 
 
 
 typedef void (*OpcodeHandler)(void);
 
-void opUnimplemented(void) {
+static void opUnimplemented(void) {
 }
 
-void op_00(void) {
+static void op_00(void) {
   //NEG DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oNEG(CPUMemoryRead(addr))
+    oNEG(MPURead8(addr))
   );
 }
-void op_03(void) {
+static void op_03(void) {
   //COM DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oCOM(CPUMemoryRead(addr))
+    oCOM(MPURead8(addr))
   );
 }
-void op_04(void) {
+static void op_04(void) {
   //LSR DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oLSR(CPUMemoryRead(addr))
+    oLSR(MPURead8(addr))
   );
 }
-void op_06(void) {
+static void op_06(void) {
   //ROR DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROR(CPUMemoryRead(addr))
+    oROR(MPURead8(addr))
   );
 }
-void op_07(void) {
+static void op_07(void) {
   //ASR DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASR(CPUMemoryRead(addr))
+    oASR(MPURead8(addr))
   );
 }
-void op_08(void) {
+static void op_08(void) {
   //ASL DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASL(CPUMemoryRead(addr))
+    oASL(MPURead8(addr))
   );
 }
-void op_09(void) {
+static void op_09(void) {
   //ROL DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROL(CPUMemoryRead(addr))
+    oROL(MPURead8(addr))
   );
 }
-void op_0A(void) {
+static void op_0A(void) {
   //DEC DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oDEC(CPUMemoryRead(addr))
+    oDEC(MPURead8(addr))
   );
 }
-void op_0C(void) {
+static void op_0C(void) {
   //INC DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oINC(CPUMemoryRead(addr))
+    oINC(MPURead8(addr))
   );
 }
-void op_0D(void) {
+static void op_0D(void) {
   //TST DP
   int32_t addr;
   uint16_t pb;
   addr = dpadd();
-  pb = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[pb];
+  pb = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[pb];
 }
-void op_0E(void) {
+static void op_0E(void) {
   //JMP DP
   int32_t addr;
   addr = dpadd();
-  regPC = addr;
+  WPCSCPUregPC = addr;
 }
-void op_0F(void) {
+static void op_0F(void) {
   //CLR DP
   int32_t addr;
   addr = dpadd();
-  CPUMemoryWrite(addr, 0);
-  regCC &= ~(F_CARRY | F_NEGATIVE | F_OVERFLOW);
-  regCC |= F_ZERO;
+  MPUWrite8(addr, 0);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= WPCSCPU_F_ZERO;
 }
 
 // --- Page 1 (0x10) Handlers ---
 
-void op_p1_21(void) { // BRN
+static void op_p1_21(void) { // BRN
     fetch16(); // Consume offset, do nothing
 }
-void op_p1_22(void) { // BHI
+static void op_p1_22(void) { // BHI
     int32_t addr = signed16(fetch16());
-    if (!(regCC & (F_CARRY | F_ZERO))) { regPC += addr; CPUTickCount++; }
+    if (!(WPCSCPUregCC & (WPCSCPU_F_CARRY | WPCSCPU_F_ZERO))) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_23(void) { // BLS
+static void op_p1_23(void) { // BLS
     int32_t addr = signed16(fetch16());
-    if (regCC & (F_CARRY | F_ZERO)) { regPC += addr; CPUTickCount++; }
+    if (WPCSCPUregCC & (WPCSCPU_F_CARRY | WPCSCPU_F_ZERO)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_24(void) { // BCC
+static void op_p1_24(void) { // BCC
     int32_t addr = signed16(fetch16());
-    if (!(regCC & F_CARRY)) { regPC += addr; CPUTickCount++; }
+    if (!(WPCSCPUregCC & WPCSCPU_F_CARRY)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_25(void) { // BCS
+static void op_p1_25(void) { // BCS
     int32_t addr = signed16(fetch16());
-    if (regCC & F_CARRY) { regPC += addr; CPUTickCount++; }
+    if (WPCSCPUregCC & WPCSCPU_F_CARRY) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_26(void) { // BNE
+static void op_p1_26(void) { // BNE
     int32_t addr = signed16(fetch16());
-    if (!(regCC & F_ZERO)) { regPC += addr; CPUTickCount++; }
+    if (!(WPCSCPUregCC & WPCSCPU_F_ZERO)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_27(void) { // LBEQ
+static void op_p1_27(void) { // LBEQ
     int32_t addr = signed16(fetch16());
-    if (regCC & F_ZERO) { regPC += addr; CPUTickCount++; }
+    if (WPCSCPUregCC & WPCSCPU_F_ZERO) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_28(void) { // BVC
+static void op_p1_28(void) { // BVC
     int32_t addr = signed16(fetch16());
-    if (!(regCC & F_OVERFLOW)) { regPC += addr; CPUTickCount++; }
+    if (!(WPCSCPUregCC & WPCSCPU_F_OVERFLOW)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_29(void) { // BVS
+static void op_p1_29(void) { // BVS
     int32_t addr = signed16(fetch16());
-    if (regCC & F_OVERFLOW) { regPC += addr; CPUTickCount++; }
+    if (WPCSCPUregCC & WPCSCPU_F_OVERFLOW) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2A(void) { // BPL
+static void op_p1_2A(void) { // BPL
     int32_t addr = signed16(fetch16());
-    if (!(regCC & F_NEGATIVE)) { regPC += addr; CPUTickCount++; }
+    if (!(WPCSCPUregCC & WPCSCPU_F_NEGATIVE)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2B(void) { // BMI
+static void op_p1_2B(void) { // BMI
     int32_t addr = signed16(fetch16());
-    if (regCC & F_NEGATIVE) { regPC += addr; CPUTickCount++; }
+    if (WPCSCPUregCC & WPCSCPU_F_NEGATIVE) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2C(void) { // BGE
+static void op_p1_2C(void) { // BGE
     int32_t addr = signed16(fetch16());
-    if (!((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2))) { regPC += addr; CPUTickCount++; }
+    if (!((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2))) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2D(void) { // BLT
+static void op_p1_2D(void) { // BLT
     int32_t addr = signed16(fetch16());
-    if ((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2)) { regPC += addr; CPUTickCount++; }
+    if ((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2E(void) { // BGT
+static void op_p1_2E(void) { // BGT
     int32_t addr = signed16(fetch16());
-    if (!((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2) || regCC & F_ZERO)) { regPC += addr; CPUTickCount++; }
+    if (!((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2) || WPCSCPUregCC & WPCSCPU_F_ZERO)) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
-void op_p1_2F(void) { // BLE
+static void op_p1_2F(void) { // BLE
     int32_t addr = signed16(fetch16());
-    if ((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2) || regCC & F_ZERO) { regPC += addr; CPUTickCount++; }
+    if ((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2) || WPCSCPUregCC & WPCSCPU_F_ZERO) { WPCSCPUregPC += addr; WPCSCPUTickCount++; }
 }
 
-void op_p1_3F(void) { // SWI2
-    regCC |= F_ENTIRE;
-    PUSHW(regPC); PUSHW(regU); PUSHW(regY); PUSHW(regX);
-    PUSHB(regDP); PUSHB(regB); PUSHB(regA); PUSHB(regCC);
-    regPC = ReadWord(vecSWI2);
+static void op_p1_3F(void) { // SWI2
+    WPCSCPUregCC |= WPCSCPU_F_ENTIRE;
+    PUSHW(WPCSCPUregPC); PUSHW(WPCSCPUregU); PUSHW(WPCSCPUregY); PUSHW(WPCSCPUregX);
+    PUSHB(WPCSCPUregDP); PUSHB(WPCSCPUregB); PUSHB(WPCSCPUregA); PUSHB(WPCSCPUregCC);
+    WPCSCPUregPC = ReadWord(WPCSCPUvecSWI2);
 }
 
 // CMPD
-void op_p1_83(void) { oCMP16(getD(), fetch16()); }
-void op_p1_93(void) { oCMP16(getD(), ReadWord(dpadd())); }
-void op_p1_A3(void) { oCMP16(getD(), ReadWord(PostByte())); }
-void op_p1_B3(void) { oCMP16(getD(), ReadWord(fetch16())); }
+static void op_p1_83(void) { oCMP16(getD(), fetch16()); }
+static void op_p1_93(void) { oCMP16(getD(), ReadWord(dpadd())); }
+static void op_p1_A3(void) { oCMP16(getD(), ReadWord(PostByte())); }
+static void op_p1_B3(void) { oCMP16(getD(), ReadWord(fetch16())); }
 
 // CMPY
-void op_p1_8C(void) { oCMP16(regY, fetch16()); }
-void op_p1_9C(void) { oCMP16(regY, ReadWord(dpadd())); }
-void op_p1_AC(void) { oCMP16(regY, ReadWord(PostByte())); }
-void op_p1_BC(void) { oCMP16(regY, ReadWord(fetch16())); }
+static void op_p1_8C(void) { oCMP16(WPCSCPUregY, fetch16()); }
+static void op_p1_9C(void) { oCMP16(WPCSCPUregY, ReadWord(dpadd())); }
+static void op_p1_AC(void) { oCMP16(WPCSCPUregY, ReadWord(PostByte())); }
+static void op_p1_BC(void) { oCMP16(WPCSCPUregY, ReadWord(fetch16())); }
 
 // LDY
-void op_p1_8E(void) { regY = fetch16(); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
-void op_p1_9E(void) { regY = ReadWord(dpadd()); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
-void op_p1_AE(void) { regY = ReadWord(PostByte()); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
-void op_p1_BE(void) { regY = ReadWord(fetch16()); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
+static void op_p1_8E(void) { WPCSCPUregY = fetch16(); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_9E(void) { WPCSCPUregY = ReadWord(dpadd()); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_AE(void) { WPCSCPUregY = ReadWord(PostByte()); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_BE(void) { WPCSCPUregY = ReadWord(fetch16()); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
 
 // STY
-void op_p1_9F(void) { int32_t addr = dpadd(); WriteWord(addr, regY); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
-void op_p1_AF(void) { int32_t addr = PostByte(); WriteWord(addr, regY); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
-void op_p1_BF(void) { int32_t addr = fetch16(); WriteWord(addr, regY); flagsNZ16(regY); regCC &= ~F_OVERFLOW; }
+static void op_p1_9F(void) { int32_t addr = dpadd(); WriteWord(addr, WPCSCPUregY); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_AF(void) { int32_t addr = PostByte(); WriteWord(addr, WPCSCPUregY); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_BF(void) { int32_t addr = fetch16(); WriteWord(addr, WPCSCPUregY); flagsNZ16(WPCSCPUregY); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
 
 // LDS
-void op_p1_CE(void) { regS = fetch16(); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
-void op_p1_DE(void) { regS = ReadWord(dpadd()); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
-void op_p1_EE(void) { regS = ReadWord(PostByte()); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
-void op_p1_FE(void) { regS = ReadWord(fetch16()); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
+static void op_p1_CE(void) { WPCSCPUregS = fetch16(); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_DE(void) { WPCSCPUregS = ReadWord(dpadd()); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_EE(void) { WPCSCPUregS = ReadWord(PostByte()); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_FE(void) { WPCSCPUregS = ReadWord(fetch16()); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
 
 // STS
-void op_p1_DF(void) { int32_t addr = dpadd(); WriteWord(addr, regS); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
-void op_p1_EF(void) { int32_t addr = PostByte(); WriteWord(addr, regS); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
-void op_p1_FF(void) { int32_t addr = fetch16(); WriteWord(addr, regS); flagsNZ16(regS); regCC &= ~F_OVERFLOW; }
+static void op_p1_DF(void) { int32_t addr = dpadd(); WriteWord(addr, WPCSCPUregS); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_EF(void) { int32_t addr = PostByte(); WriteWord(addr, WPCSCPUregS); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
+static void op_p1_FF(void) { int32_t addr = fetch16(); WriteWord(addr, WPCSCPUregS); flagsNZ16(WPCSCPUregS); WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW; }
 
 // --- Page 2 (0x11) Handlers ---
 
-void op_p2_3F(void) { // SWI3
-    regCC |= F_ENTIRE;
-    PUSHW(regPC); PUSHW(regU); PUSHW(regY); PUSHW(regX);
-    PUSHB(regDP); PUSHB(regB); PUSHB(regA); PUSHB(regCC);
-    regPC = ReadWord(vecSWI3);
+static void op_p2_3F(void) { // SWI3
+    WPCSCPUregCC |= WPCSCPU_F_ENTIRE;
+    PUSHW(WPCSCPUregPC); PUSHW(WPCSCPUregU); PUSHW(WPCSCPUregY); PUSHW(WPCSCPUregX);
+    PUSHB(WPCSCPUregDP); PUSHB(WPCSCPUregB); PUSHB(WPCSCPUregA); PUSHB(WPCSCPUregCC);
+    WPCSCPUregPC = ReadWord(WPCSCPUvecSWI3);
 }
 
 // CMPU
-void op_p2_83(void) { oCMP16(regU, fetch16()); }
-void op_p2_93(void) { oCMP16(regU, ReadWord(dpadd())); }
-void op_p2_A3(void) { oCMP16(regU, ReadWord(PostByte())); }
-void op_p2_B3(void) { oCMP16(regU, ReadWord(fetch16())); }
+static void op_p2_83(void) { oCMP16(WPCSCPUregU, fetch16()); }
+static void op_p2_93(void) { oCMP16(WPCSCPUregU, ReadWord(dpadd())); }
+static void op_p2_A3(void) { oCMP16(WPCSCPUregU, ReadWord(PostByte())); }
+static void op_p2_B3(void) { oCMP16(WPCSCPUregU, ReadWord(fetch16())); }
 
 // CMPS
-void op_p2_8C(void) { oCMP16(regS, fetch16()); }
-void op_p2_9C(void) { oCMP16(regS, ReadWord(dpadd())); }
-void op_p2_AC(void) { oCMP16(regS, ReadWord(PostByte())); }
-void op_p2_BC(void) { oCMP16(regS, ReadWord(fetch16())); }
+static void op_p2_8C(void) { oCMP16(WPCSCPUregS, fetch16()); }
+static void op_p2_9C(void) { oCMP16(WPCSCPUregS, ReadWord(dpadd())); }
+static void op_p2_AC(void) { oCMP16(WPCSCPUregS, ReadWord(PostByte())); }
+static void op_p2_BC(void) { oCMP16(WPCSCPUregS, ReadWord(fetch16())); }
 
 // Define a default/null handler for empty slots
 #define __ 0 
@@ -1282,10 +1243,10 @@ static const OpcodeHandler oDispatchTablePage2[256] = {
 #undef __
 
 
-void op_10(void) {
+static void op_10(void) {
   // Page 1
   uint8_t opcode = fetch();
-  CPUTickCount += cycles2[opcode];
+  WPCSCPUTickCount += WPCSCPUCycles2[opcode];
   
   if (oDispatchTablePage1[opcode]) {
       oDispatchTablePage1[opcode]();
@@ -1294,301 +1255,311 @@ void op_10(void) {
   }
 }
 
-void op_11(void) {
+static void op_11(void) {
   // Page 2
+
   uint8_t opcode = fetch();
-  CPUTickCount += cycles2[opcode];
+  WPCSCPUTickCount += WPCSCPUCycles2[opcode];
 
   if (oDispatchTablePage2[opcode]) {
       oDispatchTablePage2[opcode]();
   } else {
       // Optional: Handle invalid Page 2 opcode
   }
+
 }
 
-void op_12(void) {
+static void op_12(void) {
   //NOP
 }
 
-void op_13(void) {
+static void op_13(void) {
   //SYNC
   /*
   This commands stops the CPU, brings the processor bus to high impedance state and waits for an interrupt.
   */
   //console.log('SYNC is broken!');
+
 }
 
-void op_16(void) {
+static void op_16(void) {
   //LBRA relative
   int32_t addr = fetch16();
-  regPC += addr;
+  WPCSCPUregPC += addr;
 }
 
-void op_17(void) {
+static void op_17(void) {
   //LBSR relative
   int32_t addr = fetch16();
-  PUSHW(regPC);
-  regPC += addr;
+  PUSHW(WPCSCPUregPC);
+  WPCSCPUregPC += addr;
 }
 
-void op_19(void) {
+static void op_19(void) {
+  //DAA
   uint8_t correctionFactor = 0;
-  uint8_t nhi = regA & 0xF0;
-  uint8_t nlo = regA & 0x0F;
-  uint8_t oldCarry = regCC & F_CARRY; // Save carry from the ADD/ADC
-
-  if (nlo > 0x09 || regCC & F_HALFCARRY) {
+  uint8_t nhi = WPCSCPUregA & 0xF0;
+  uint8_t nlo = WPCSCPUregA & 0x0F;
+  int32_t addr;
+  uint8_t oldCarry = WPCSCPUregCC & WPCSCPU_F_CARRY; // Save the incoming carry
+  
+  if (nlo > 0x09 || WPCSCPUregCC & WPCSCPU_F_HALFCARRY) {
     correctionFactor |= 0x06;
   }
-  if (oldCarry || nhi > 0x99 || (nhi > 0x89 && nlo > 0x09)) {
+  if (nhi > 0x80 && nlo > 0x09) {
     correctionFactor |= 0x60;
   }
-
-  uint16_t result = (uint16_t)regA + correctionFactor;
-
-  regCC &= ~(F_CARRY | F_NEGATIVE | F_ZERO | F_OVERFLOW);
-  if (result & 0x100 || oldCarry) {
-    regCC |= F_CARRY;
+  if (nhi > 0x90 || oldCarry) {
+    correctionFactor |= 0x60;
   }
-
-  regA = result & 0xFF;
-  regCC |= flagsNZ[regA];
+  
+  addr = correctionFactor + WPCSCPUregA;
+  
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_ZERO | WPCSCPU_F_OVERFLOW);
+  
+  // Restore the original carry, or set it if the correction math generated a new one
+  if (addr & 0x100 || oldCarry) {
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
+  }
+  
+  WPCSCPUregA = addr & 0xFF;
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA];
 }
 
-void op_1A(void) {
+static void op_1A(void) {
   //ORCC
-  regCC |= fetch();
+  WPCSCPUregCC |= fetch();
 }
 
-void op_1C(void) {
+static void op_1C(void) {
   //ANDCC
-  regCC &= fetch();
+  WPCSCPUregCC &= fetch();
 }
 
-void op_1D(void) {
+static void op_1D(void) {
   //SEX
   //TODO should we use signed here?
-  regA = regB & 0x80 ? 0xff : 0;
+  WPCSCPUregA = WPCSCPUregB & 0x80 ? 0xff : 0;
   flagsNZ16(getD());
 }
 
-void op_1E(void) {
+static void op_1E(void) {
   //EXG
   uint16_t pb = fetch();
   TFREXG(pb, true);
 }
 
-void op_1F(void) {
+static void op_1F(void) {
   //TFR
   uint16_t pb = fetch();
   TFREXG(pb, false);
 }
 
-void op_20(void) {
+static void op_20(void) {
   //BRA
   int32_t addr = signed8(fetch());
-  regPC += addr;
+  WPCSCPUregPC += addr;
 }
 
-void op_21(void) {
+static void op_21(void) {
   //BRN
   fetch();
 }
 
-void op_22(void) {
+static void op_22(void) {
   //BHI
   int32_t addr = signed8(fetch());
-  if (!(regCC & (F_CARRY | F_ZERO))) {
-    regPC += addr;
+  if (!(WPCSCPUregCC & (WPCSCPU_F_CARRY | WPCSCPU_F_ZERO))) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_23(void) {
+static void op_23(void) {
   //BLS
   int32_t addr = signed8(fetch());
-  if (regCC & (F_CARRY | F_ZERO)) {
-    regPC += addr;
+  if (WPCSCPUregCC & (WPCSCPU_F_CARRY | WPCSCPU_F_ZERO)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_24(void) {
+static void op_24(void) {
   //BCC
   int32_t addr = signed8(fetch());
-  if (!(regCC & F_CARRY)) {
-    regPC += addr;
+  if (!(WPCSCPUregCC & WPCSCPU_F_CARRY)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_25(void) {
+static void op_25(void) {
   //BCS
   int32_t addr = signed8(fetch());
-  if (regCC & F_CARRY) {
-    regPC += addr;
+  if (WPCSCPUregCC & WPCSCPU_F_CARRY) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_26(void) {
+static void op_26(void) {
   //BNE
   int32_t addr = signed8(fetch());
-  if (!(regCC & F_ZERO)) {
-    regPC += addr;
+  if (!(WPCSCPUregCC & WPCSCPU_F_ZERO)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_27(void) {
+static void op_27(void) {
   //BEQ
   int32_t addr = signed8(fetch());
-  if (regCC & F_ZERO) {
-    regPC += addr;
+  if (WPCSCPUregCC & WPCSCPU_F_ZERO) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_28(void) {
+static void op_28(void) {
   //BVC
   int32_t addr = signed8(fetch());
-  if (!(regCC & F_OVERFLOW)) {
-    regPC += addr;
+  if (!(WPCSCPUregCC & WPCSCPU_F_OVERFLOW)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_29(void) {
+static void op_29(void) {
   //BVS
   int32_t addr = signed8(fetch());
-  if (regCC & F_OVERFLOW) {
-    regPC += addr;
+  if (WPCSCPUregCC & WPCSCPU_F_OVERFLOW) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2A(void) {
+static void op_2A(void) {
   //BPL
   int32_t addr = signed8(fetch());
-  if (!(regCC & F_NEGATIVE)) {
-    regPC += addr;
+  if (!(WPCSCPUregCC & WPCSCPU_F_NEGATIVE)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2B(void) {
+static void op_2B(void) {
   //BMI
   int32_t addr = signed8(fetch());
-  if (regCC & F_NEGATIVE) {
-    regPC += addr;
+  if (WPCSCPUregCC & WPCSCPU_F_NEGATIVE) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2C(void) {
+static void op_2C(void) {
   //BGE
   int32_t addr = signed8(fetch());
-  if (!((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2))) {
-    regPC += addr;
+  if (!((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2))) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2D(void) {
+static void op_2D(void) {
   //BLT
   int32_t addr = signed8(fetch());
-  if ((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2)) {
-    regPC += addr;
+  if ((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2)) {
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2E(void) {
+static void op_2E(void) {
   //BGT
   int32_t addr = signed8(fetch());
   if (
-    !((regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2) ||
-      regCC & F_ZERO)
+    !((WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2) ||
+      WPCSCPUregCC & WPCSCPU_F_ZERO)
   ) {
-    regPC += addr;
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_2F(void) {
+static void op_2F(void) {
   //BLE
   int32_t addr = signed8(fetch());
   if (
-    (regCC & F_NEGATIVE) ^ ((regCC & F_OVERFLOW) << 2) ||
-    regCC & F_ZERO
+    (WPCSCPUregCC & WPCSCPU_F_NEGATIVE) ^ ((WPCSCPUregCC & WPCSCPU_F_OVERFLOW) << 2) ||
+    WPCSCPUregCC & WPCSCPU_F_ZERO
   ) {
-    regPC += addr;
+    WPCSCPUregPC += addr;
   }
 }
 
-void op_30(void) {
+static void op_30(void) {
   //LEAX
-  regX = PostByte();
-  regCC &= ~F_ZERO;
-  if (regX == 0) {
-    regCC |= F_ZERO;
+  WPCSCPUregX = PostByte();
+  WPCSCPUregCC &= ~WPCSCPU_F_ZERO;
+  if (WPCSCPUregX == 0) {
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
 }
 
-void op_31(void) {
+static void op_31(void) {
   //LEAY
-  regY = PostByte();
-  regCC &= ~F_ZERO;
-  if (regY == 0) {
-    regCC |= F_ZERO;
+  WPCSCPUregY = PostByte();
+  WPCSCPUregCC &= ~WPCSCPU_F_ZERO;
+  if (WPCSCPUregY == 0) {
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   }
 }
 
-void op_32(void) {
+static void op_32(void) {
   //LEAS
-  regS = PostByte();
+  WPCSCPUregS = PostByte();
 }
 
-void op_33(void) {
+static void op_33(void) {
   //LEAU
-  regU = PostByte();
+  WPCSCPUregU = PostByte();
 }
 
-void op_34(void) {
+static void op_34(void) {
   //PSHS
   PSHS(fetch());
 }
 
-void op_35(void) {
+static void op_35(void) {
   //PULS
   PULS(fetch());
 }
 
-void op_36(void) {
+static void op_36(void) {
   //PSHU
   PSHU(fetch());
 }
 
-void op_37(void) {
+static void op_37(void) {
   //PULU
   PULU(fetch());
 }
 
-void op_39(void) {
+static void op_39(void) {
   //RTS
-  regPC = PULLW();
+  WPCSCPUregPC = PULLW();
 }
 
-void op_3A(void) {
+static void op_3A(void) {
   //ABX
-  regX += regB;
+  WPCSCPUregX += WPCSCPUregB;
 }
 
-void op_3B(void) {
+static void op_3B(void) {
   //RTI
-  regCC = PULLB();
-  //debug('RTI', regCC & F_ENTIRE, CPUTickCount);
+  WPCSCPUregCC = PULLB();
+  //debug('RTI', WPCSCPUregCC & WPCSCPU_F_ENTIRE, WPCSCPUTickCount);
   // Check for fast interrupt
-  if (regCC & F_ENTIRE) {
-    CPUTickCount += 9;
-    regA = PULLB();
-    regB = PULLB();
-    regDP = PULLB();
-    regX = PULLW();
-    regY = PULLW();
-    regU = PULLW();
+  if (WPCSCPUregCC & WPCSCPU_F_ENTIRE) {
+    WPCSCPUTickCount += 9;
+    WPCSCPUregA = PULLB();
+    WPCSCPUregB = PULLB();
+    WPCSCPUregDP = PULLB();
+    WPCSCPUregX = PULLW();
+    WPCSCPUregY = PULLW();
+    WPCSCPUregU = PULLW();
   }
-  regPC = PULLW();
+  WPCSCPUregPC = PULLW();
 }
 
-void op_3C(void) {
+static void op_3C(void) {
   //CWAI
   //console.log('CWAI is broken!');
   /*
@@ -1597,1138 +1568,1140 @@ void op_3C(void) {
    * later, the state is *not* saved again after CWAI.
    * see mame-6809.c how to proper implement this opcode
    */
-  regCC &= fetch();
+  WPCSCPUregCC &= fetch();
   //TODO - ??? set cwai flag to true, do not exec next interrupt (NMI, FIRQ, IRQ) - but set reset cwai flag afterwards
+
 }
 
-void op_3D(void) {
+static void op_3D(void) {
   //MUL
-  int32_t addr = regA * regB;
+  int32_t addr = WPCSCPUregA * WPCSCPUregB;
   if (addr == 0) {
-    regCC |= F_ZERO;
+    WPCSCPUregCC |= WPCSCPU_F_ZERO;
   } else {
-    regCC &= ~F_ZERO;
+    WPCSCPUregCC &= ~WPCSCPU_F_ZERO;
   }
   if (addr & 0x80) {
-    regCC |= F_CARRY;
+    WPCSCPUregCC |= WPCSCPU_F_CARRY;
   } else {
-    regCC &= ~F_CARRY;
+    WPCSCPUregCC &= ~WPCSCPU_F_CARRY;
   }
   setD(addr);
 }
 
-void op_3F(void) {
+static void op_3F(void) {
   //SWI
   //console.log('SWI is untested!');
-  regCC |= F_ENTIRE;
-  PUSHW(regPC);
-  PUSHW(regU);
-  PUSHW(regY);
-  PUSHW(regX);
-  PUSHB(regDP);
-  PUSHB(regB);
-  PUSHB(regA);
-  PUSHB(regCC);
-  regCC |= F_IRQMASK | F_FIRQMASK;
-  regPC = ReadWord(vecSWI);
+  WPCSCPUregCC |= WPCSCPU_F_ENTIRE;
+  PUSHW(WPCSCPUregPC);
+  PUSHW(WPCSCPUregU);
+  PUSHW(WPCSCPUregY);
+  PUSHW(WPCSCPUregX);
+  PUSHB(WPCSCPUregDP);
+  PUSHB(WPCSCPUregB);
+  PUSHB(WPCSCPUregA);
+  PUSHB(WPCSCPUregCC);
+  WPCSCPUregCC |= WPCSCPU_F_IRQMASK | WPCSCPU_F_FIRQMASK;
+  WPCSCPUregPC = ReadWord(WPCSCPUvecSWI);
 }
 
-void op_40(void) {
-  regA = oNEG(regA);
+static void op_40(void) {
+  WPCSCPUregA = oNEG(WPCSCPUregA);
 }
 
-void op_43(void) {
-  regA = oCOM(regA);
+static void op_43(void) {
+  WPCSCPUregA = oCOM(WPCSCPUregA);
 }
 
-void op_44(void) {
-  regA = oLSR(regA);
+static void op_44(void) {
+  WPCSCPUregA = oLSR(WPCSCPUregA);
 }
 
-void op_46(void) {
-  regA = oROR(regA);
+static void op_46(void) {
+  WPCSCPUregA = oROR(WPCSCPUregA);
 }
 
-void op_47(void) {
-  regA = oASR(regA);
+static void op_47(void) {
+  WPCSCPUregA = oASR(WPCSCPUregA);
 }
 
-void op_48(void) {
-  regA = oASL(regA);
+static void op_48(void) {
+  WPCSCPUregA = oASL(WPCSCPUregA);
 }
 
-void op_49(void) {
-  regA = oROL(regA);
+static void op_49(void) {
+  WPCSCPUregA = oROL(WPCSCPUregA);
 }
 
-void op_4A(void) {
-  regA = oDEC(regA);
+static void op_4A(void) {
+  WPCSCPUregA = oDEC(WPCSCPUregA);
 }
 
-void op_4C(void) {
-  regA = oINC(regA);
+static void op_4C(void) {
+  WPCSCPUregA = oINC(WPCSCPUregA);
 }
 
-void op_4D(void) {
+static void op_4D(void) {
   // tsta
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_4F(void) {
+static void op_4F(void) {
   /* CLRA */
-  regA = 0;
-  regCC &= ~(F_NEGATIVE | F_OVERFLOW | F_CARRY);
-  regCC |= F_ZERO;
+  WPCSCPUregA = 0;
+  WPCSCPUregCC &= ~(WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW | WPCSCPU_F_CARRY);
+  WPCSCPUregCC |= WPCSCPU_F_ZERO;
 }
 
-void op_50(void) {
+static void op_50(void) {
   /* NEGB */
-  regB = oNEG(regB);
+  WPCSCPUregB = oNEG(WPCSCPUregB);
 }
 
-void op_53(void) {
-  regB = oCOM(regB);
+static void op_53(void) {
+  WPCSCPUregB = oCOM(WPCSCPUregB);
 }
 
-void op_54(void) {
-  regB = oLSR(regB);
+static void op_54(void) {
+  WPCSCPUregB = oLSR(WPCSCPUregB);
 }
 
-void op_56(void) {
-  regB = oROR(regB);
+static void op_56(void) {
+  WPCSCPUregB = oROR(WPCSCPUregB);
 }
 
-void op_57(void) {
-  regB = oASR(regB);
+static void op_57(void) {
+  WPCSCPUregB = oASR(WPCSCPUregB);
 }
 
-void op_58(void) {
-  regB = oASL(regB);
+static void op_58(void) {
+  WPCSCPUregB = oASL(WPCSCPUregB);
 }
 
-void op_59(void) {
-  regB = oROL(regB);
+static void op_59(void) {
+  WPCSCPUregB = oROL(WPCSCPUregB);
 }
 
-void op_5A(void) {
-  regB = oDEC(regB);
+static void op_5A(void) {
+  WPCSCPUregB = oDEC(WPCSCPUregB);
 }
 
-void op_5C(void) {
+static void op_5C(void) {
   // INCB
-  regB = oINC(regB);
+  WPCSCPUregB = oINC(WPCSCPUregB);
 }
 
-void op_5D(void) {
+static void op_5D(void) {
   /* TSTB */
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_5F(void) {
+static void op_5F(void) {
   //CLRB
-  regB = 0;
-  regCC &= ~(F_NEGATIVE | F_OVERFLOW | F_CARRY);
-  regCC |= F_ZERO;
+  WPCSCPUregB = 0;
+  WPCSCPUregCC &= ~(WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW | WPCSCPU_F_CARRY);
+  WPCSCPUregCC |= WPCSCPU_F_ZERO;
 }
 
-void op_60(void) {
+static void op_60(void) {
   //NEG indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oNEG(CPUMemoryRead(addr))
+    oNEG(MPURead8(addr))
   );
 }
 
-void op_63(void) {
+static void op_63(void) {
   //COM indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oCOM(CPUMemoryRead(addr))
+    oCOM(MPURead8(addr))
   );
 }
 
-void op_64(void) {
+static void op_64(void) {
   //LSR indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oLSR(CPUMemoryRead(addr))
+    oLSR(MPURead8(addr))
   );
 }
 
-void op_66(void) {
+static void op_66(void) {
   //ROR indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROR(CPUMemoryRead(addr))
+    oROR(MPURead8(addr))
   );
 }
 
-void op_67(void) {
+static void op_67(void) {
   //ASR indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASR(CPUMemoryRead(addr))
+    oASR(MPURead8(addr))
   );
 }
 
-void op_68(void) {
+static void op_68(void) {
   //ASL indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASL(CPUMemoryRead(addr))
+    oASL(MPURead8(addr))
   );
 }
 
-void op_69(void) {
+static void op_69(void) {
   //ROL indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROL(CPUMemoryRead(addr))
+    oROL(MPURead8(addr))
   );
 }
 
-void op_6A(void) {
+static void op_6A(void) {
   //DEC indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oDEC(CPUMemoryRead(addr))
+    oDEC(MPURead8(addr))
   );
 }
 
-void op_6C(void) {
+static void op_6C(void) {
   //INC indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oINC(CPUMemoryRead(addr))
+    oINC(MPURead8(addr))
   );
 }
 
-void op_6D(void) {
+static void op_6D(void) {
   //TST indexed
   int32_t addr = PostByte();
-  uint16_t pb = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[pb];
+  uint16_t pb = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[pb];
 }
 
-void op_6E(void) {
+static void op_6E(void) {
   //JMP indexed
   int32_t addr = PostByte();
-  regPC = addr;
+  WPCSCPUregPC = addr;
 }
 
-void op_6F(void) {
+static void op_6F(void) {
   //CLR indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(addr, 0);
-  regCC &= ~(F_CARRY | F_NEGATIVE | F_OVERFLOW);
-  regCC |= F_ZERO;
+  MPUWrite8(addr, 0);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= WPCSCPU_F_ZERO;
 }
 
-void op_70(void) {
+static void op_70(void) {
   //NEG extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oNEG(CPUMemoryRead(addr))
+    oNEG(MPURead8(addr))
   );
 }
 
-void op_73(void) {
+static void op_73(void) {
   //COM extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oCOM(CPUMemoryRead(addr))
+    oCOM(MPURead8(addr))
   );
 }
 
-void op_74(void) {
+static void op_74(void) {
   //LSR extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oLSR(CPUMemoryRead(addr))
+    oLSR(MPURead8(addr))
   );
 }
 
-void op_76(void) {
+static void op_76(void) {
   //ROR extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROR(CPUMemoryRead(addr))
+    oROR(MPURead8(addr))
   );
 }
 
-void op_77(void) {
+static void op_77(void) {
   //ASR extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASR(CPUMemoryRead(addr))
+    oASR(MPURead8(addr))
   );
 }
 
-void op_78(void) {
+static void op_78(void) {
   //ASL extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oASL(CPUMemoryRead(addr))
+    oASL(MPURead8(addr))
   );
 }
 
-void op_79(void) {
+static void op_79(void) {
   //ROL extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oROL(CPUMemoryRead(addr))
+    oROL(MPURead8(addr))
   );
 }
 
-void op_7A(void) {
+static void op_7A(void) {
   //DEC extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oDEC(CPUMemoryRead(addr))
+    oDEC(MPURead8(addr))
   );
 }
 
-void op_7C(void) {
+static void op_7C(void) {
   //INC extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(
+  MPUWrite8(
     addr,
-    oINC(CPUMemoryRead(addr))
+    oINC(MPURead8(addr))
   );
 }
 
-void op_7D(void) {
+static void op_7D(void) {
   //TST extended
   int32_t addr = fetch16();
-  uint16_t pb = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[pb];
+  uint16_t pb = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[pb];
 }
 
-void op_7E(void) {
+static void op_7E(void) {
   //JMP extended
   int32_t addr = fetch16();
-  regPC = addr;
+  WPCSCPUregPC = addr;
 }
 
-void op_7F(void) {
+static void op_7F(void) {
   //CLR extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(addr, 0);
-  regCC &= ~(F_CARRY | F_NEGATIVE | F_OVERFLOW);
-  regCC |= F_ZERO;
+  MPUWrite8(addr, 0);
+  WPCSCPUregCC &= ~(WPCSCPU_F_CARRY | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= WPCSCPU_F_ZERO;
 }
 
-void op_80(void) {
+static void op_80(void) {
   //SUBA imm
-  regA = oSUB(regA, fetch());
+  WPCSCPUregA = oSUB(WPCSCPUregA, fetch());
 }
 
-void op_81(void) {
+static void op_81(void) {
   //CMPA imm
-  oCMP(regA, fetch());
+  oCMP(WPCSCPUregA, fetch());
 }
 
-void op_82(void) {
+static void op_82(void) {
   //SBCA imm
-  regA = oSBC(regA, fetch());
+  WPCSCPUregA = oSBC(WPCSCPUregA, fetch());
 }
 
-void op_83(void) {
+static void op_83(void) {
   //SUBD imm
   setD(oSUB16(getD(), fetch16()));
 }
 
-void op_84(void) {
+static void op_84(void) {
   //ANDA imm
-  regA = oAND(regA, fetch());
+  WPCSCPUregA = oAND(WPCSCPUregA, fetch());
 }
 
-void op_85(void) {
+static void op_85(void) {
   //BITA imm
-  oAND(regA, fetch());
+  oAND(WPCSCPUregA, fetch());
 }
 
-void op_86(void) {
+static void op_86(void) {
   //LDA imm
-  regA = fetch();
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  WPCSCPUregA = fetch();
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_88(void) {
+static void op_88(void) {
   //EORA imm
-  regA = oEOR(regA, fetch());
+  WPCSCPUregA = oEOR(WPCSCPUregA, fetch());
 }
 
-void op_89(void) {
+static void op_89(void) {
   //ADCA imm
-  regA = oADC(regA, fetch());
+  WPCSCPUregA = oADC(WPCSCPUregA, fetch());
 }
 
-void op_8A(void) {
+static void op_8A(void) {
   //ORA imm
-  regA = oOR(regA, fetch());
+  WPCSCPUregA = oOR(WPCSCPUregA, fetch());
 }
 
-void op_8B(void) {
+static void op_8B(void) {
   //ADDA imm
-  regA = oADD(regA, fetch());
+  WPCSCPUregA = oADD(WPCSCPUregA, fetch());
 }
 
-void op_8C(void) {
+static void op_8C(void) {
   //CMPX imm
-  oCMP16(regX, fetch16());
+  oCMP16(WPCSCPUregX, fetch16());
 }
 
-void op_8D(void) {
+static void op_8D(void) {
   //JSR imm
   int32_t addr = signed8(fetch());
-  PUSHW(regPC);
-  regPC += addr;
+  PUSHW(WPCSCPUregPC);
+  WPCSCPUregPC += addr;
 }
 
-void op_8E(void) {
+static void op_8E(void) {
   //LDX imm
-  regX = fetch16();
-  flagsNZ16(regX);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregX = fetch16();
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_90(void) {
+static void op_90(void) {
   //SUBA direct
   int32_t addr = dpadd();
-  regA = oSUB(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSUB(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_91(void) {
+static void op_91(void) {
   //CMPA direct
   int32_t addr = dpadd();
-  oCMP(regA, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_92(void) {
+static void op_92(void) {
   //SBCA direct
   int32_t addr = dpadd();
-  regA = oSBC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSBC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_93(void) {
+static void op_93(void) {
   //SUBD direct
   int32_t addr = dpadd();
   setD(oSUB16(getD(), ReadWord(addr)));
 }
 
-void op_94(void) {
+static void op_94(void) {
   //ANDA direct
   int32_t addr = dpadd();
-  regA = oAND(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_95(void) {
+static void op_95(void) {
   //BITA direct
   int32_t addr = dpadd();
-  oAND(regA, CPUMemoryRead(addr));
+  oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_96(void) {
+static void op_96(void) {
   //LDA direct
   int32_t addr = dpadd();
-  regA = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  WPCSCPUregA = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_97(void) {
+static void op_97(void) {
   //STA direct
   int32_t addr = dpadd();
-  CPUMemoryWrite(addr, regA);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  MPUWrite8(addr, WPCSCPUregA);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_98(void) {
+static void op_98(void) {
   //EORA direct
   int32_t addr = dpadd();
-  regA = oEOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oEOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_99(void) {
+static void op_99(void) {
   //ADCA direct
   int32_t addr = dpadd();
-  regA = oADC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_9A(void) {
+static void op_9A(void) {
   //ORA direct
   int32_t addr = dpadd();
-  regA = oOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_9B(void) {
+static void op_9B(void) {
   //ADDA direct
   int32_t addr = dpadd();
-  regA = oADD(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADD(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_9C(void) {
+static void op_9C(void) {
   //CMPX direct
   int32_t addr = dpadd();
-  oCMP16(regX, ReadWord(addr));
+  oCMP16(WPCSCPUregX, ReadWord(addr));
 }
 
-void op_9D(void) {
+static void op_9D(void) {
   //JSR direct
   int32_t addr = dpadd();
-  PUSHW(regPC);
-  regPC = addr;
+  PUSHW(WPCSCPUregPC);
+  WPCSCPUregPC = addr;
 }
 
-void op_9E(void) {
+static void op_9E(void) {
   //LDX direct
   int32_t addr = dpadd();
-  regX = ReadWord(addr);
-  flagsNZ16(regX);
-  regCC &= ~(F_OVERFLOW);
+  WPCSCPUregX = ReadWord(addr);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_9F(void) {
+static void op_9F(void) {
   //STX direct
   int32_t addr = dpadd();
-  WriteWord(addr, regX);
-  flagsNZ16(regX);
-  regCC &= ~(F_OVERFLOW);
+  WriteWord(addr, WPCSCPUregX);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_A0(void) {
+static void op_A0(void) {
   //SUBA indexed
   int32_t addr = PostByte();
-  regA = oSUB(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSUB(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A1(void) {
+static void op_A1(void) {
   //CMPA indexed
   int32_t addr = PostByte();
-  oCMP(regA, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A2(void) {
+static void op_A2(void) {
   //SBCA indexed
   int32_t addr = PostByte();
-  regA = oSBC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSBC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A3(void) {
+static void op_A3(void) {
   //SUBD indexed
   int32_t addr = PostByte();
   setD(oSUB16(getD(), ReadWord(addr)));
 }
 
-void op_A4(void) {
+static void op_A4(void) {
   //ANDA indexed
   int32_t addr = PostByte();
-  regA = oAND(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A5(void) {
+static void op_A5(void) {
   //BITA indexed
   int32_t addr = PostByte();
-  oAND(regA, CPUMemoryRead(addr));
+  oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A6(void) {
+static void op_A6(void) {
   //LDA indexed
   int32_t addr = PostByte();
-  regA = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  WPCSCPUregA = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_A7(void) {
+static void op_A7(void) {
   //STA indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(addr, regA);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  MPUWrite8(addr, WPCSCPUregA);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_A8(void) {
+static void op_A8(void) {
   //EORA indexed
   int32_t addr = PostByte();
-  regA = oEOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oEOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_A9(void) {
+static void op_A9(void) {
   //ADCA indexed
   int32_t addr = PostByte();
-  regA = oADC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_AA(void) {
+static void op_AA(void) {
   //ORA indexed
   int32_t addr = PostByte();
-  regA = oOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_AB(void) {
+static void op_AB(void) {
   //ADDA indexed
   int32_t addr = PostByte();
-  regA = oADD(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADD(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_AC(void) {
+static void op_AC(void) {
   //CMPX indexed
   int32_t addr = PostByte();
-  oCMP16(regX, ReadWord(addr));
+  oCMP16(WPCSCPUregX, ReadWord(addr));
 }
 
-void op_AD(void) {
+static void op_AD(void) {
   //JSR indexed
   int32_t addr = PostByte();
-  PUSHW(regPC);
-  regPC = addr;
+  PUSHW(WPCSCPUregPC);
+  WPCSCPUregPC = addr;
 }
 
-void op_AE(void) {
+static void op_AE(void) {
   //LDX indexed
   int32_t addr = PostByte();
-  regX = ReadWord(addr);
-  flagsNZ16(regX);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregX = ReadWord(addr);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_AF(void) {
+static void op_AF(void) {
   //STX indexed
   int32_t addr = PostByte();
-  WriteWord(addr, regX);
-  flagsNZ16(regX);
-  regCC &= ~F_OVERFLOW;
+  WriteWord(addr, WPCSCPUregX);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_B0(void) {
+static void op_B0(void) {
   //SUBA extended
   int32_t addr = fetch16();
-  regA = oSUB(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSUB(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B1(void) {
+static void op_B1(void) {
   //CMPA extended
   int32_t addr = fetch16();
-  oCMP(regA, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B2(void) {
+static void op_B2(void) {
   //SBCA extended
   int32_t addr = fetch16();
-  regA = oSBC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oSBC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B3(void) {
+static void op_B3(void) {
   //SUBD extended
   int32_t addr = fetch16();
   setD(oSUB16(getD(), ReadWord(addr)));
 }
 
-void op_B4(void) {
+static void op_B4(void) {
   //ANDA extended
   int32_t addr = fetch16();
-  regA = oAND(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B5(void) {
+static void op_B5(void) {
   //BITA extended
   int32_t addr = fetch16();
-  oAND(regA, CPUMemoryRead(addr));
+  oAND(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B6(void) {
+static void op_B6(void) {
   //LDA extended
   int32_t addr = fetch16();
-  regA = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  WPCSCPUregA = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_B7(void) {
+static void op_B7(void) {
   //STA extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(addr, regA);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regA & 0xFF];
+  MPUWrite8(addr, WPCSCPUregA);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregA & 0xFF];
 }
 
-void op_B8(void) {
+static void op_B8(void) {
   //EORA extended
   int32_t addr = fetch16();
-  regA = oEOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oEOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_B9(void) {
+static void op_B9(void) {
   //ADCA extended
   int32_t addr = fetch16();
-  regA = oADC(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADC(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_BA(void) {
+static void op_BA(void) {
   //ORA extended
   int32_t addr = fetch16();
-  regA = oOR(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oOR(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_BB(void) {
+static void op_BB(void) {
   //ADDA extended
   int32_t addr = fetch16();
-  regA = oADD(regA, CPUMemoryRead(addr));
+  WPCSCPUregA = oADD(WPCSCPUregA, MPURead8(addr));
 }
 
-void op_BC(void) {
+static void op_BC(void) {
   //CMPX extended
   int32_t addr = fetch16();
-  oCMP16(regX, ReadWord(addr));
+  oCMP16(WPCSCPUregX, ReadWord(addr));
 }
 
-void op_BD(void) {
+static void op_BD(void) {
   //JSR extended
   int32_t addr = fetch16();
-  PUSHW(regPC);
-  regPC = addr;
+  PUSHW(WPCSCPUregPC);
+  WPCSCPUregPC = addr;
 }
 
-void op_BE(void) {
+static void op_BE(void) {
   //LDX extended
   int32_t addr = fetch16();
-  regX = ReadWord(addr);
-  flagsNZ16(regX);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregX = ReadWord(addr);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_BF(void) {
+static void op_BF(void) {
   //STX extended
   int32_t addr = fetch16();
-  WriteWord(addr, regX);
-  flagsNZ16(regX);
-  regCC &= ~F_OVERFLOW;
+  WriteWord(addr, WPCSCPUregX);
+  flagsNZ16(WPCSCPUregX);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_C0(void) {
+static void op_C0(void) {
   //SUBB imm
-  regB = oSUB(regB, fetch());
+  WPCSCPUregB = oSUB(WPCSCPUregB, fetch());
 }
 
-void op_C1(void) {
+static void op_C1(void) {
   //CMPB imm
-  oCMP(regB, fetch());
+  oCMP(WPCSCPUregB, fetch());
 }
 
-void op_C2(void) {
+static void op_C2(void) {
   //SBCB imm
-  regB = oSBC(regB, fetch());
+  WPCSCPUregB = oSBC(WPCSCPUregB, fetch());
 }
 
-void op_C3(void) {
+static void op_C3(void) {
   //ADDD imm
   setD(oADD16(getD(), fetch16()));
 }
 
-void op_C4(void) {
+static void op_C4(void) {
   //ANDB imm
-  regB = oAND(regB, fetch());
+  WPCSCPUregB = oAND(WPCSCPUregB, fetch());
 }
 
-void op_C5(void) {
+static void op_C5(void) {
   //BITB imm
-  oAND(regB, fetch());
+  oAND(WPCSCPUregB, fetch());
 }
 
-void op_C6(void) {
+static void op_C6(void) {
   //LDB imm
-  regB = fetch();
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  WPCSCPUregB = fetch();
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_C8(void) {
+static void op_C8(void) {
   //EORB imm
-  regB = oEOR(regB, fetch());
+  WPCSCPUregB = oEOR(WPCSCPUregB, fetch());
 }
 
-void op_C9(void) {
+static void op_C9(void) {
   //ADCB imm
-  regB = oADC(regB, fetch());
+  WPCSCPUregB = oADC(WPCSCPUregB, fetch());
 }
 
-void op_CA(void) {
+static void op_CA(void) {
   //ORB imm
-  regB = oOR(regB, fetch());
+  WPCSCPUregB = oOR(WPCSCPUregB, fetch());
 }
 
-void op_CB(void) {
+static void op_CB(void) {
   //ADDB imm
-  regB = oADD(regB, fetch());
+  WPCSCPUregB = oADD(WPCSCPUregB, fetch());
 }
 
-void op_CC(void) {
+static void op_CC(void) {
   //LDD imm
   int32_t addr = fetch16();
   setD(addr);
   flagsNZ16(addr);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_CE(void) {
+static void op_CE(void) {
   //LDU imm
-  regU = fetch16();
-  flagsNZ16(regU);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregU = fetch16();
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_D0(void) {
+static void op_D0(void) {
   //SUBB direct
   int32_t addr = dpadd();
-  regB = oSUB(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSUB(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D1(void) {
+static void op_D1(void) {
   //CMPB direct
   int32_t addr = dpadd();
-  oCMP(regB, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D2(void) {
+static void op_D2(void) {
   //SBCB direct
   int32_t addr = dpadd();
-  regB = oSBC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSBC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D3(void) {
+static void op_D3(void) {
   //ADDD direct
   int32_t addr = dpadd();
   setD(oADD16(getD(), ReadWord(addr)));
 }
 
-void op_D4(void) {
+static void op_D4(void) {
   //ANDB direct
   int32_t addr = dpadd();
-  regB = oAND(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D5(void) {
+static void op_D5(void) {
   //BITB direct
   int32_t addr = dpadd();
-  oAND(regB, CPUMemoryRead(addr));
+  oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D6(void) {
+static void op_D6(void) {
   //LDB direct
   int32_t addr = dpadd();
-  regB = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  WPCSCPUregB = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_D7(void) {
+static void op_D7(void) {
   //STB direct
   int32_t addr = dpadd();
-  CPUMemoryWrite(addr, regB);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  MPUWrite8(addr, WPCSCPUregB);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_D8(void) {
+static void op_D8(void) {
   //EORB direct
   int32_t addr = dpadd();
-  regB = oEOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oEOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_D9(void) {
+static void op_D9(void) {
   //ADCB direct
   int32_t addr = dpadd();
-  regB = oADC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_DA(void) {
+static void op_DA(void) {
   //ORB direct
   int32_t addr = dpadd();
-  regB = oOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_DB(void) {
+static void op_DB(void) {
   //ADDB direct
   int32_t addr = dpadd();
-  regB = oADD(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADD(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_DC(void) {
+static void op_DC(void) {
   //LDD direct
   int32_t addr = dpadd();
   uint16_t pb = ReadWord(addr);
   setD(pb);
   flagsNZ16(pb);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_DD(void) {
+static void op_DD(void) {
   //STD direct
   int32_t addr = dpadd();
   WriteWord(addr, getD());
   flagsNZ16(getD());
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_DE(void) {
+static void op_DE(void) {
   //LDU direct
   int32_t addr = dpadd();
-  regU = ReadWord(addr);
-  flagsNZ16(regU);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregU = ReadWord(addr);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_DF(void) {
+static void op_DF(void) {
   //STU direct
   int32_t addr = dpadd();
-  WriteWord(addr, regU);
-  flagsNZ16(regU);
-  regCC &= ~F_OVERFLOW;
+  WriteWord(addr, WPCSCPUregU);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_E0(void) {
+static void op_E0(void) {
   //SUBB indexed
   int32_t addr = PostByte();
-  regB = oSUB(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSUB(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E1(void) {
+static void op_E1(void) {
   //CMPB indexed
   int32_t addr = PostByte();
-  oCMP(regB, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E2(void) {
+static void op_E2(void) {
   //SBCB indexed
   int32_t addr = PostByte();
-  regB = oSBC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSBC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E3(void) {
+static void op_E3(void) {
   //ADDD indexed
   int32_t addr = PostByte();
   setD(oADD16(getD(), ReadWord(addr)));
 }
 
-void op_E4(void) {
+static void op_E4(void) {
   //ANDB indexed
   int32_t addr = PostByte();
-  regB = oAND(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E5(void) {
+static void op_E5(void) {
   //BITB indexed
   int32_t addr = PostByte();
-  oAND(regB, CPUMemoryRead(addr));
+  oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E6(void) {
+static void op_E6(void) {
   //LDB indexed
   int32_t addr = PostByte();
-  regB = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  WPCSCPUregB = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_E7(void) {
+static void op_E7(void) {
   //STB indexed
   int32_t addr = PostByte();
-  CPUMemoryWrite(addr, regB);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  MPUWrite8(addr, WPCSCPUregB);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_E8(void) {
+static void op_E8(void) {
   //EORB indexed
   int32_t addr = PostByte();
-  regB = oEOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oEOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_E9(void) {
+static void op_E9(void) {
   //ADCB indexed
   int32_t addr = PostByte();
-  regB = oADC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_EA(void) {
+static void op_EA(void) {
   //ORB indexed
   int32_t addr = PostByte();
-  regB = oOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_EB(void) {
+static void op_EB(void) {
   //ADDB indexed
   int32_t addr = PostByte();
-  regB = oADD(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADD(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_EC(void) {
+static void op_EC(void) {
   //LDD indexed
   int32_t addr = PostByte();
   uint16_t pb = ReadWord(addr);
   setD(pb);
   flagsNZ16(pb);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_ED(void) {
+static void op_ED(void) {
   //STD indexed
   int32_t addr = PostByte();
   WriteWord(addr, getD());
   flagsNZ16(getD());
-  regCC &= ~(F_OVERFLOW);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_EE(void) {
+static void op_EE(void) {
   //LDU indexed
   int32_t addr = PostByte();
-  regU = ReadWord(addr);
-  flagsNZ16(regU);
-  regCC &= ~(F_OVERFLOW);
+  WPCSCPUregU = ReadWord(addr);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_EF(void) {
+static void op_EF(void) {
   //STU indexed
   int32_t addr = PostByte();
-  WriteWord(addr, regU);
-  flagsNZ16(regU);
-  regCC &= ~(F_OVERFLOW);
+  WriteWord(addr, WPCSCPUregU);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_F0(void) {
+static void op_F0(void) {
   //SUBB extended
   int32_t addr = fetch16();
-  regB = oSUB(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSUB(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F1(void) {
+static void op_F1(void) {
   //CMPB extended
   int32_t addr = fetch16();
-  oCMP(regB, CPUMemoryRead(addr));
+  oCMP(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F2(void) {
+static void op_F2(void) {
   //SBCB extended
   int32_t addr = fetch16();
-  regB = oSBC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oSBC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F3(void) {
+static void op_F3(void) {
   //ADDD extended
   int32_t addr = fetch16();
   setD(oADD16(getD(), ReadWord(addr)));
 }
 
-void op_F4(void) {
+static void op_F4(void) {
   //ANDB extended
   int32_t addr = fetch16();
-  regB = oAND(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F5(void) {
+static void op_F5(void) {
   //BITB extended
   int32_t addr = fetch16();
-  oAND(regB, CPUMemoryRead(addr));
+  oAND(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F6(void) {
+static void op_F6(void) {
   //LDB extended
   int32_t addr = fetch16();
-  regB = CPUMemoryRead(addr);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  WPCSCPUregB = MPURead8(addr);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_F7(void) {
+static void op_F7(void) {
   //STB extended
   int32_t addr = fetch16();
-  CPUMemoryWrite(addr, regB);
-  regCC &= ~(F_ZERO | F_NEGATIVE | F_OVERFLOW);
-  regCC |= flagsNZ[regB & 0xFF];
+  MPUWrite8(addr, WPCSCPUregB);
+  WPCSCPUregCC &= ~(WPCSCPU_F_ZERO | WPCSCPU_F_NEGATIVE | WPCSCPU_F_OVERFLOW);
+  WPCSCPUregCC |= flagsNZ[WPCSCPUregB & 0xFF];
 }
 
-void op_F8(void) {
+static void op_F8(void) {
   //EORB extended
   int32_t addr = fetch16();
-  regB = oEOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oEOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_F9(void) {
+static void op_F9(void) {
   //ADCB extended
   int32_t addr = fetch16();
-  regB = oADC(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADC(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_FA(void) {
+static void op_FA(void) {
   //ORB extended
   int32_t addr = fetch16();
-  regB = oOR(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oOR(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_FB(void) {
+static void op_FB(void) {
   //ADDB extended
   int32_t addr = fetch16();
-  regB = oADD(regB, CPUMemoryRead(addr));
+  WPCSCPUregB = oADD(WPCSCPUregB, MPURead8(addr));
 }
 
-void op_FC(void) {
+static void op_FC(void) {
   //LDD extended
   int32_t addr = fetch16();
   uint16_t pb = ReadWord(addr);
   setD(pb);
   flagsNZ16(pb);
-  regCC &= ~F_OVERFLOW;
+  WPCSCPUregCC &= ~WPCSCPU_F_OVERFLOW;
 }
 
-void op_FD(void) {
+static void op_FD(void) {
   //STD extended
   int32_t addr = fetch16();
   WriteWord(addr, getD());
   flagsNZ16(getD());
-  regCC &= ~(F_OVERFLOW);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_FE(void) {
+static void op_FE(void) {
   //LDU extended
   int32_t addr = fetch16();
-  regU = ReadWord(addr);
-  flagsNZ16(regU);
-  regCC &= ~(F_OVERFLOW);
+  WPCSCPUregU = ReadWord(addr);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
-void op_FF(void) {
+static void op_FF(void) {
   //STU extended
   int32_t addr = fetch16();
-  WriteWord(addr, regU);
-  flagsNZ16(regU);
-  regCC &= ~(F_OVERFLOW);
+  WriteWord(addr, WPCSCPUregU);
+  flagsNZ16(WPCSCPUregU);
+  WPCSCPUregCC &= ~(WPCSCPU_F_OVERFLOW);
 }
 
+/*
 static const OpcodeHandler oDispatchTable[256] = {
     [0x00] = op_00,
     [0x01] = opUnimplemented,
@@ -2987,97 +2960,331 @@ static const OpcodeHandler oDispatchTable[256] = {
     [0xFE] = op_FE,
     [0xFF] = op_FF
 };
+*/
 
+static void WPCSCPUDispatch(uint8_t opcode) {
+  switch (opcode) {
+    case 0x00: op_00(); break;
+    case 0x03: op_03(); break;
+    case 0x04: op_04(); break;
+    case 0x06: op_06(); break;
+    case 0x07: op_07(); break;
+    case 0x08: op_08(); break;
+    case 0x09: op_09(); break;
+    case 0x0A: op_0A(); break;
+    case 0x0C: op_0C(); break;
+    case 0x0D: op_0D(); break;
+    case 0x0E: op_0E(); break;
+    case 0x0F: op_0F(); break;
+    case 0x10: op_10(); break;
+    case 0x11: op_11(); break;
+    case 0x12: op_12(); break;
+    case 0x13: op_13(); break;
+    case 0x16: op_16(); break;
+    case 0x17: op_17(); break;
+    case 0x19: op_19(); break;
+    case 0x1A: op_1A(); break;
+    case 0x1C: op_1C(); break;
+    case 0x1D: op_1D(); break;
+    case 0x1E: op_1E(); break;
+    case 0x1F: op_1F(); break;
+    case 0x20: op_20(); break;
+    case 0x21: op_21(); break;
+    case 0x22: op_22(); break;
+    case 0x23: op_23(); break;
+    case 0x24: op_24(); break;
+    case 0x25: op_25(); break;
+    case 0x26: op_26(); break;
+    case 0x27: op_27(); break;
+    case 0x28: op_28(); break;
+    case 0x29: op_29(); break;
+    case 0x2A: op_2A(); break;
+    case 0x2B: op_2B(); break;
+    case 0x2C: op_2C(); break;
+    case 0x2D: op_2D(); break;
+    case 0x2E: op_2E(); break;
+    case 0x2F: op_2F(); break;
+    case 0x30: op_30(); break;
+    case 0x31: op_31(); break;
+    case 0x32: op_32(); break;
+    case 0x33: op_33(); break;
+    case 0x34: op_34(); break;
+    case 0x35: op_35(); break;
+    case 0x36: op_36(); break;
+    case 0x37: op_37(); break;
+    case 0x39: op_39(); break;
+    case 0x3A: op_3A(); break;
+    case 0x3B: op_3B(); break;
+    case 0x3C: op_3C(); break;
+    case 0x3D: op_3D(); break;
+    case 0x3F: op_3F(); break;
+    case 0x40: op_40(); break;
+    case 0x43: op_43(); break;
+    case 0x44: op_44(); break;
+    case 0x46: op_46(); break;
+    case 0x47: op_47(); break;
+    case 0x48: op_48(); break;
+    case 0x49: op_49(); break;
+    case 0x4A: op_4A(); break;
+    case 0x4C: op_4C(); break;
+    case 0x4D: op_4D(); break;
+    case 0x4F: op_4F(); break;
+    case 0x50: op_50(); break;
+    case 0x53: op_53(); break;
+    case 0x54: op_54(); break;
+    case 0x56: op_56(); break;
+    case 0x57: op_57(); break;
+    case 0x58: op_58(); break;
+    case 0x59: op_59(); break;
+    case 0x5A: op_5A(); break;
+    case 0x5C: op_5C(); break;
+    case 0x5D: op_5D(); break;
+    case 0x5F: op_5F(); break;
+    case 0x60: op_60(); break;
+    case 0x63: op_63(); break;
+    case 0x64: op_64(); break;
+    case 0x66: op_66(); break;
+    case 0x67: op_67(); break;
+    case 0x68: op_68(); break;
+    case 0x69: op_69(); break;
+    case 0x6A: op_6A(); break;
+    case 0x6C: op_6C(); break;
+    case 0x6D: op_6D(); break;
+    case 0x6E: op_6E(); break;
+    case 0x6F: op_6F(); break;
+    case 0x70: op_70(); break;
+    case 0x73: op_73(); break;
+    case 0x74: op_74(); break;
+    case 0x76: op_76(); break;
+    case 0x77: op_77(); break;
+    case 0x78: op_78(); break;
+    case 0x79: op_79(); break;
+    case 0x7A: op_7A(); break;
+    case 0x7C: op_7C(); break;
+    case 0x7D: op_7D(); break;
+    case 0x7E: op_7E(); break;
+    case 0x7F: op_7F(); break;
+    case 0x80: op_80(); break;
+    case 0x81: op_81(); break;
+    case 0x82: op_82(); break;
+    case 0x83: op_83(); break;
+    case 0x84: op_84(); break;
+    case 0x85: op_85(); break;
+    case 0x86: op_86(); break;
+    case 0x88: op_88(); break;
+    case 0x89: op_89(); break;
+    case 0x8A: op_8A(); break;
+    case 0x8B: op_8B(); break;
+    case 0x8C: op_8C(); break;
+    case 0x8D: op_8D(); break;
+    case 0x8E: op_8E(); break;
+    case 0x90: op_90(); break;
+    case 0x91: op_91(); break;
+    case 0x92: op_92(); break;
+    case 0x93: op_93(); break;
+    case 0x94: op_94(); break;
+    case 0x95: op_95(); break;
+    case 0x96: op_96(); break;
+    case 0x97: op_97(); break;
+    case 0x98: op_98(); break;
+    case 0x99: op_99(); break;
+    case 0x9A: op_9A(); break;
+    case 0x9B: op_9B(); break;
+    case 0x9C: op_9C(); break;
+    case 0x9D: op_9D(); break;
+    case 0x9E: op_9E(); break;
+    case 0x9F: op_9F(); break;
+    case 0xA0: op_A0(); break;
+    case 0xA1: op_A1(); break;
+    case 0xA2: op_A2(); break;
+    case 0xA3: op_A3(); break;
+    case 0xA4: op_A4(); break;
+    case 0xA5: op_A5(); break;
+    case 0xA6: op_A6(); break;
+    case 0xA7: op_A7(); break;
+    case 0xA8: op_A8(); break;
+    case 0xA9: op_A9(); break;
+    case 0xAA: op_AA(); break;
+    case 0xAB: op_AB(); break;
+    case 0xAC: op_AC(); break;
+    case 0xAD: op_AD(); break;
+    case 0xAE: op_AE(); break;
+    case 0xAF: op_AF(); break;
+    case 0xB0: op_B0(); break;
+    case 0xB1: op_B1(); break;
+    case 0xB2: op_B2(); break;
+    case 0xB3: op_B3(); break;
+    case 0xB4: op_B4(); break;
+    case 0xB5: op_B5(); break;
+    case 0xB6: op_B6(); break;
+    case 0xB7: op_B7(); break;
+    case 0xB8: op_B8(); break;
+    case 0xB9: op_B9(); break;
+    case 0xBA: op_BA(); break;
+    case 0xBB: op_BB(); break;
+    case 0xBC: op_BC(); break;
+    case 0xBD: op_BD(); break;
+    case 0xBE: op_BE(); break;
+    case 0xBF: op_BF(); break;
+    case 0xC0: op_C0(); break;
+    case 0xC1: op_C1(); break;
+    case 0xC2: op_C2(); break;
+    case 0xC3: op_C3(); break;
+    case 0xC4: op_C4(); break;
+    case 0xC5: op_C5(); break;
+    case 0xC6: op_C6(); break;
+    case 0xC8: op_C8(); break;
+    case 0xC9: op_C9(); break;
+    case 0xCA: op_CA(); break;
+    case 0xCB: op_CB(); break;
+    case 0xCC: op_CC(); break;
+    case 0xCE: op_CE(); break;
+    case 0xD0: op_D0(); break;
+    case 0xD1: op_D1(); break;
+    case 0xD2: op_D2(); break;
+    case 0xD3: op_D3(); break;
+    case 0xD4: op_D4(); break;
+    case 0xD5: op_D5(); break;
+    case 0xD6: op_D6(); break;
+    case 0xD7: op_D7(); break;
+    case 0xD8: op_D8(); break;
+    case 0xD9: op_D9(); break;
+    case 0xDA: op_DA(); break;
+    case 0xDB: op_DB(); break;
+    case 0xDC: op_DC(); break;
+    case 0xDD: op_DD(); break;
+    case 0xDE: op_DE(); break;
+    case 0xDF: op_DF(); break;
+    case 0xE0: op_E0(); break;
+    case 0xE1: op_E1(); break;
+    case 0xE2: op_E2(); break;
+    case 0xE3: op_E3(); break;
+    case 0xE4: op_E4(); break;
+    case 0xE5: op_E5(); break;
+    case 0xE6: op_E6(); break;
+    case 0xE7: op_E7(); break;
+    case 0xE8: op_E8(); break;
+    case 0xE9: op_E9(); break;
+    case 0xEA: op_EA(); break;
+    case 0xEB: op_EB(); break;
+    case 0xEC: op_EC(); break;
+    case 0xED: op_ED(); break;
+    case 0xEE: op_EE(); break;
+    case 0xEF: op_EF(); break;
+    case 0xF0: op_F0(); break;
+    case 0xF1: op_F1(); break;
+    case 0xF2: op_F2(); break;
+    case 0xF3: op_F3(); break;
+    case 0xF4: op_F4(); break;
+    case 0xF5: op_F5(); break;
+    case 0xF6: op_F6(); break;
+    case 0xF7: op_F7(); break;
+    case 0xF8: op_F8(); break;
+    case 0xF9: op_F9(); break;
+    case 0xFA: op_FA(); break;
+    case 0xFB: op_FB(); break;
+    case 0xFC: op_FC(); break;
+    case 0xFD: op_FD(); break;
+    case 0xFE: op_FE(); break;
+    case 0xFF: op_FF(); break;
+    default:   opUnimplemented(); break;
+  }
+}
+ 
 
-uint16_t CPUStep() {
-  uint16_t oldCPUTickCount = CPUTickCount;
+uint32_t WPCS_CPUNumberOfFirqsHandled = 0;
+
+uint16_t WPCSCPUStep() {
+  uint16_t oldWPCSCPUTickCount = WPCSCPUTickCount;
+  //WPCSCPUfirqPending = (g_YmStatus & 0x03) ? true : false;
+  //if (((WPCSCPUregCC & WPCSCPU_F_IRQMASK) == 0) && (g_YmStatus & 0x03)) WPCSCPUfirqPending = true;
+
+  // Top of WPCSCPUStep
+//  if ((g_YmStatus & 0x03) && (WPCSCPUregCC & WPCSCPU_F_FIRQMASK)) {
+//  }
 
   // LATCH IRQ lines, see 6803 diagram "figure3-1.jpg"
-
-  if (CPUfirqPending) {
-    if ((regCC & F_FIRQMASK) == 0) {
-      CPUfirqPending = false;
-      CPUfirqCount++;
-      _executeFirq();
-      return CPUTickCount - oldCPUTickCount;
+  if (WPCSCPUfirqPending) {
+    if ((WPCSCPUregCC & WPCSCPU_F_FIRQMASK) == 0) {
+      WPCSCPUfirqPending = false;
+      WPCSCPUfirqCount++;
+      WPCSCPU_executeFirq();
+      WPCS_CPUNumberOfFirqsHandled += 1;
+      return WPCSCPUTickCount - oldWPCSCPUTickCount;
     }
-    CPUmissedFIRQ++;
+    WPCSCPUmissedFIRQ++;
   }
 
-  if (CPUirqPending) {
-    if ((regCC & F_IRQMASK) == 0) {
-      CPUirqPending = false;
-      CPUirqCount++;
-      _executeIrq();
-      return CPUTickCount - oldCPUTickCount;
+  if (WPCSCPUirqPending) {
+    if ((WPCSCPUregCC & WPCSCPU_F_IRQMASK) == 0) {
+      WPCSCPUirqPending = false;
+      WPCSCPUirqCount++;
+      WPCSCPU_executeIrq();
+      return WPCSCPUTickCount - oldWPCSCPUTickCount;
     }
-    CPUmissedIRQ++;
+    WPCSCPUmissedIRQ++;
   }
 
 //  int32_t addr = 0;
 //  uint16_t pb = 0;
-#ifdef MPU89_BUILD_FOR_COMPUTER    
-  if (showDebug) printf("PC=0x%04X ", regPC);
-#endif
-
   uint8_t opcode = fetch();
-  CPUTickCount += cycles[opcode];
+  WPCSCPUTickCount += WPCSCPUCycles[opcode];
 
-#ifdef MPU89_BUILD_FOR_COMPUTER  
-  if (showDebug) printf("OP=%02X ", opcode);
-#endif
+  // This approach is a LUT of opcode functions
+  //oDispatchTable[opcode]();
 
-  oDispatchTable[opcode]();
+  // This approach is a dispatch switch
+  WPCSCPUDispatch(opcode);
+//  if (((WPCSCPUregCC & WPCSCPU_F_IRQMASK) == 0) && (g_YmStatus & 0x03)) WPCSCPUfirqPending = true;
 
-  regA &= 0xff;
-  regB &= 0xff;
-  regCC &= 0xff;
-  regDP &= 0xff;
-  regX &= 0xffff;
-  regY &= 0xffff;
-  regU &= 0xffff;
-  regS &= 0xffff;
-  regPC &= 0xffff;
+  WPCSCPUregA &= 0xff;
+  WPCSCPUregB &= 0xff;
+  WPCSCPUregCC &= 0xff;
+  WPCSCPUregDP &= 0xff;
+  WPCSCPUregX &= 0xffff;
+  WPCSCPUregY &= 0xffff;
+  WPCSCPUregU &= 0xffff;
+  WPCSCPUregS &= 0xffff;
+  WPCSCPUregPC &= 0xffff;
 
-#ifdef MPU89_BUILD_FOR_COMPUTER  
-  if (showDebug) {
-    printf("A=%02X ", regA);
-    printf("B=%02X ", regB);
-    printf("CC=%02X ", regCC);
-    printf("DP=%02X ", regDP);
-    printf("X=%04X ", regX);
-    printf("Y=%04X ", regY);
-    printf("U=%04X ", regU);
-    printf("S=%04X\n", regS);
-  }
-#endif  
-  return CPUTickCount - oldCPUTickCount;
+  return WPCSCPUTickCount - oldWPCSCPUTickCount;
 }
 
-void CPUReset() {
-  CPUirqPending = false;
-  CPUfirqPending = false;
+void WPCSCPUReset() {
+  WPCSCPUTickCount = 0;
+  WPCSCPUmissedIRQ = 0;
+  WPCSCPUmissedFIRQ = 0;
+  WPCSCPUirqCount = 0;
+  WPCSCPUfirqCount = 0;
+  WPCSCPUnmiCount = 0;
 
-  regDP = 0;
-  CPUmissedIRQ = 0;
-  CPUmissedFIRQ = 0;
-  CPUirqCount = 0;
-  CPUfirqCount = 0;
+  WPCSCPUregA = 0;
+  WPCSCPUregB = 0;
+  WPCSCPUregX = 0;
+  WPCSCPUregY = 0;
+  WPCSCPUregU = 0;
+  WPCSCPUregS = 0;
+  WPCSCPUregCC = 0;
+  WPCSCPUregPC = 0;
+  WPCSCPUregDP = 0;  
+  WPCSCPUirqPending = false;
+  WPCSCPUfirqPending = false;
+  WPCSCPUregDP = 0;
 
-  regCC = F_IRQMASK | F_FIRQMASK;
-  regPC = ReadWord(vecRESET);
-  CPUTickCount = 0;
+  WPCSCPUregCC = WPCSCPU_F_IRQMASK | WPCSCPU_F_FIRQMASK;
+  WPCSCPUregPC = ReadWord(WPCSCPUvecRESET);
+  WPCSCPUTickCount = 0;
 }
 
 
 
-uint16_t CPUSteps(uint16_t numTicks) {
-  uint16_t preCPUTickCount = CPUTickCount;
+uint16_t WPCSCPUSteps(uint16_t numTicks) {
+  uint16_t preWPCSCPUTickCount = WPCSCPUTickCount;
   uint16_t ticksToRun = numTicks;
   uint8_t invalidStepDetected = 0;
   int16_t ticksRemaining = numTicks;
   while (ticksRemaining > 0) {
-    uint16_t cycles = CPUStep();
+    uint16_t cycles = WPCSCPUStep();
     if (cycles < 1) {
       invalidStepDetected++;
       ticksRemaining--;
@@ -3086,22 +3293,28 @@ uint16_t CPUSteps(uint16_t numTicks) {
   }
   if (invalidStepDetected && ticksToRun > 1 && invalidStepDetected == ticksToRun) {
   }
-  return CPUTickCount - preCPUTickCount;
+  return WPCSCPUTickCount - preWPCSCPUTickCount;
 }
 
-void CPUIRQ() {
-  CPUirqPending = true;
+
+void WPCSCPUIRQ() {
+  WPCSCPUirqPending = true;
 }
 
-void CPUFIRQ() {
-  CPUfirqPending = true;
+void WPCSCPUFIRQ(bool firqOn) {
+  WPCSCPUfirqPending = firqOn;
 }
 
-void CPUNMI() {
-  CPUnmiCount++;
-  _executeNmi();
+void WPCSCPUNMI() {
+  WPCSCPUnmiCount++;
+  WPCSCPU_executeNmi();
 }
 
-uint16_t CPUGetPC() {
-  return regPC;
+uint16_t WPCSCPUGetPC() {
+  return WPCSCPUregPC;
+}
+
+
+void WPCSCPUEnableLogging(bool loggingOn) {
+  WPCSCPUWriteToLog = loggingOn;
 }

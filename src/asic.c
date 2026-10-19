@@ -1,5 +1,6 @@
 #include "mpu89.h"
 #include "asic.h"
+#include "SecurityPIC.h"
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
 #include <iostream>
@@ -10,22 +11,13 @@
 
 #define WPC_PROTECTED_MEMORY_UNLOCK_VALUE 0xB4
 
-// NVRAM Offsets
-#define NVRAM_CLOCK_YEAR_HI        0x1800
-#define NVRAM_CLOCK_YEAR_LO        0x1801
-#define NVRAM_CLOCK_MONTH          0x1802
-#define NVRAM_CLOCK_DAY_OF_MONTH   0x1803
-#define NVRAM_CLOCK_DAY_OF_WEEK    0x1804
-#define NVRAM_CLOCK_HOUR           0x1805
-#define NVRAM_CLOCK_IS_VALID       0x1806
-#define NVRAM_CLOCK_CHECKSUM_TIME  0x1807
-#define NVRAM_CLOCK_CHECKSUM_DATE  0x1808
-    
+
 uint8_t ASICRomBank;
+int32_t ASICBankedROMOffset;
 bool ASICWDReset;
 bool ASICPeriodicIRQTimerEnabled;
 
-uint8_t ASICPageMask;
+uint8_t ASICPageMask = 0x1F;
 uint8_t ASICRam[ASIC_RAM_SIZE];
 bool ASICHardwareHasSecurityPic;
     
@@ -33,9 +25,10 @@ int ASICDiagnosticLedToggleCount;
 uint8_t ASICOldDiagnostigLedState;
 bool ASIC_firqSourceDmd;
 int ASICIrqCountGI;
-uint8_t ASICZeroCrossFlag;
+volatile uint8_t ASICZeroCrossFlag;
 int ASICTicksZeroCross;
-bool ASICUseSoftwareZC = false;
+bool ASICUseSoftwareZC = true;
+bool ASICRequiresReboot = false;
 uint8_t ASICMemoryProtectionMask;
 
 int64_t ASICMidnightMadnessMode;
@@ -58,6 +51,11 @@ uint8_t ASICDateChecksum1;
 uint8_t ASICDateChecksum2;
 bool ASICDateTimeHasChanged;
 
+// 5-element array for GI channels D0-D4 (values 0-7)
+volatile uint8_t GIBrightness[5] = {5, 5, 5, 5, 5};
+volatile uint8_t GIBrightnessTracker[3][5];
+volatile uint8_t LastTriacValue = 0x00;
+uint8_t ASICGIDimmingAlgo = ASIC_GI_DIMMING_INTERRUPT;
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
 tm ASICGetTime();
@@ -148,7 +146,6 @@ __attribute__((always_inline)) static inline uint8_t xformRow(uint8_t x) {
 
 
 void ASICInit() {
-    ASICPageMask = 0x1F;
     ASICHour = 0;
     ASICMinute = 0;
     
@@ -158,7 +155,16 @@ void ASICInit() {
     ASICHardwareHasSecurityPic = false; // This value should be read from config or INI
     ASICDateTimeBase = NULL;
     ASICDateTimeHasChanged = false;
+    ASICRequiresReboot = false;
 }
+
+void ASICSetROMSize(uint32_t romSize) {
+    // Calculate the mask based on the number of 16KB (0x4000) banks
+    // e.g., 512KB = 32 banks -> mask is 31 (0x1F)
+    // e.g., 256KB = 16 banks -> mask is 15 (0x0F)
+    ASICPageMask = (romSize / 0x4000) - 1;    
+}
+
 
 void ASICRelease() {
 }
@@ -166,17 +172,16 @@ void ASICRelease() {
 void ASICReset(bool turnOnBlanking) {
     ASICPeriodicIRQTimerEnabled = false;
     ASICRomBank = 0;
+    ASICBankedROMOffset = 0;
     ASICDiagnosticLedToggleCount = 0;
     ASICOldDiagnostigLedState = 0;
     ASIC_firqSourceDmd = false;
-    ASICIrqCountGI = 0;
+    ASICIrqCountGI = 1;
     ASICZeroCrossFlag = 0;
     ASICTicksZeroCross = 0;
     ASICMemoryProtectionMask = 0;
-
-    if (ASICHardwareHasSecurityPic) {
-        //securityPic->reset();
-    }
+    SecurityPICReset();
+    ASICRequiresReboot = false;
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
     ASICMidnightMadnessMode = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -187,6 +192,12 @@ void ASICReset(bool turnOnBlanking) {
     ASICWatchdogTicks = WATCHDOG_ARMED_FOR_TICKS;
     ASICWatchdogExpiredCounter = 0;
     ASICCabinetSwitches = 0;
+
+    for (int trackerIteration=0; trackerIteration<3; trackerIteration++) {
+        for (int giChannel=0; giChannel<5; giChannel++) {
+            GIBrightnessTracker[trackerIteration][giChannel] = 8;
+        }
+    }
 }
 
 void ASICUseSoftwareZeroCross(bool useSWZC) {
@@ -196,6 +207,10 @@ void ASICUseSoftwareZeroCross(bool useSWZC) {
 
 uint8_t ASICGetRomBank() {
     return ASICRomBank;
+}
+
+int32_t ASICGetBankedROMOffset() {
+    return ASICBankedROMOffset;
 }
 
 bool ASICGetWDReset() {
@@ -276,6 +291,7 @@ tm ASICGetTime() {
 
 
 void WriteFliptronic(uint8_t value) {
+    __disable_irq();
     SetAddressBus(WPC_FLIPTRONICS_FLIPPER_PORT_A);
     SetDataBus(value);
     SetDataBusDirection(true);
@@ -300,6 +316,18 @@ void WriteFliptronic(uint8_t value) {
     SetWDENHigh();    
     SetIOENHigh();
     SetRWHigh();    // RW High (Return to Read/Idle)
+    __enable_irq();
+}
+
+
+void ASICWriteSwitchCol(uint8_t value) {
+    __disable_irq();
+    SetDataBus(xformCol(value));
+    __NOP(); // delay just to account for possible ringing
+    __NOP();
+    __NOP();
+    StrobeSwitchColLatch();
+    __enable_irq();
 }
 
 
@@ -344,24 +372,50 @@ void ASICWrite(uint16_t offset, uint8_t value) {
             break;
 
         case WPC_SWITCH_COL_SELECT:
-            if (ASICHardwareHasSecurityPic) {
-                return;
-            } else {
-                SetDataBus(xformCol(value));
-                __NOP(); // delay just to account for possible ringing
-                __NOP();
-                __NOP();
-                StrobeSwitchColLatch();
-                return;
+            if (!ASICHardwareHasSecurityPic) {
+                // 0x00 is used by standard games to turn off columns.
+                // We strictly look for non-power-of-2 values (like 0x0D or 0x16) to flag a PIC game.
+                bool isWPC89Strobe = (value == 0x00) || ((value & (value - 1)) == 0);
+                
+                if (!isWPC89Strobe) {
+                    ASICHardwareHasSecurityPic = true;
+                }                
             }
 
-        case WPC_GI_TRIAC:
-            SetDataBus(value);
-            SetDRLine(false);
-            StrobeTriac();
-            DelayQuarterCycle();
-            SetDRLine(true);
+            if (ASICHardwareHasSecurityPic) {
+                bool requiresReboot = SecurityPICWrite(value, ASICWriteSwitchCol);
+                if (requiresReboot) {
+                    // Signal main loop to reboot
+                    ASICRequiresReboot = true;
+                }
+            } else {
+                ASICWriteSwitchCol(value);
+            }
             break;
+
+        case WPC_GI_TRIAC: {
+            for (int count=0; count<5; count++) {
+                bool trackerCanBeSet = GIBrightnessTracker[0][count]==8 || GIBrightnessTracker[0][count]==0;
+                if (trackerCanBeSet) {
+                    if (value & (0x01 << count)) {
+                        if (ASICIrqCountGI>7) GIBrightnessTracker[0][count] = 1;
+                        else GIBrightnessTracker[0][count] = 9 - ASICIrqCountGI;
+                    } else if ((value & (0x01 << count))==0) {
+                        GIBrightnessTracker[0][count] = 0;
+                    }
+                } 
+            }
+
+            LastTriacValue = value;
+            if (ASICUseSoftwareZC || ASICGIDimmingAlgo==ASIC_GI_DIMMING_ORIGINAL) {
+                SetDataBus(value);
+                SetDRLine(false);
+                StrobeTriac();
+                DelayQuarterCycle();
+                SetDRLine(true);
+            }            
+            break;
+        } 
 
         case WPC_LAMP_ROW_OUTPUT: {
             SetLampRow(value);
@@ -402,10 +456,12 @@ void ASICWrite(uint16_t offset, uint8_t value) {
         case WPC_ROM_BANK: {
             uint8_t bank = value & ASICPageMask;
             ASICRomBank = bank;
+            ASICBankedROMOffset = (bank * ROM_BANK_SIZE) - 0x4000;
             break;
         }
 
         case WPC_ZEROCROSS_IRQ_CLEAR: {
+//            volatile uint8_t lastvalue = value;
             if (value & WPC_ZC_WATCHDOG_RESET) {
                 ASICWatchdogTicks = WATCHDOG_ARMED_FOR_TICKS;
                 ASICWDReset = true;
@@ -419,9 +475,9 @@ void ASICWrite(uint16_t offset, uint8_t value) {
                 }
             }
 
-            if (value & WPC_ZC_IRQ_CLEAR) {
-                ASICIrqCountGI++;
-            }
+//            if ((value & WPC_ZC_IRQ_CLEAR)) {
+//                ASICZeroCrossFlag = 0;
+//            }
 
             if (value & WPC_ZC_IRQ_ENABLE) {
                 ASICPeriodicIRQTimerEnabled = true;
@@ -445,6 +501,7 @@ uint8_t ASICReadLastCabinetInput() {
 uint8_t ReadFliptronic() {
     uint8_t result;
 
+    __disable_irq();
     SetAddressBus(WPC_FLIPTRONICS_FLIPPER_PORT_A);    
     // 2. Prepare for Read: Set Port E to Input (High-Z)
     SetDataBusDirection(false); 
@@ -477,8 +534,27 @@ uint8_t ReadFliptronic() {
   
     // Restore Data Bus to Output
     SetDataBusDirection(true);
-  
+    __enable_irq();
+
     return result;    
+}
+
+uint8_t ASICReadSwitchRow() {
+    __disable_irq();
+    SetSwitchRowLine(false); // turn on U13
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    SetDataBusDirection(false); // set data lines to Read
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    uint8_t invertedData = ReadDataBus();
+    DelayQuarterCycle();
+    DelayQuarterCycle();
+    SetSwitchRowLine(true); // turn off U13
+    SetDataBusDirection(true); // set data lines to Write
+    __enable_irq();
+
+    return xformRow(invertedData ^ 0xFF);
 }
 
 
@@ -505,6 +581,7 @@ uint8_t ASICRead(uint16_t offset) {
             return ASICRam[asicRAMOffset];
 
         case WPC_SWITCH_CABINET_INPUT: {
+            __disable_irq();
             SetDirectSwitchRowLine(false); // turn on U15
             SetDataBusDirection(false); // set data lines to Read
             DelayQuarterCycle();
@@ -512,6 +589,7 @@ uint8_t ASICRead(uint16_t offset) {
             SetDirectSwitchRowLine(true); // turn off U15
             SetDataBusDirection(true); // set data lines to Write
             ASICCabinetSwitches = xformRow(invertedData ^ 0xFF);
+            __enable_irq();
             return ASICCabinetSwitches;
         }
 
@@ -520,20 +598,9 @@ uint8_t ASICRead(uint16_t offset) {
 
         case WPC_SWITCH_ROW_SELECT:
             if (ASICHardwareHasSecurityPic) {
-                return 0;
+                return SecurityPICRead(ASICReadSwitchRow);
             } else {
-                SetSwitchRowLine(false); // turn on U13
-                DelayQuarterCycle();
-                DelayQuarterCycle();
-                SetDataBusDirection(false); // set data lines to Read
-                DelayQuarterCycle();
-                DelayQuarterCycle();
-                uint8_t invertedData = ReadDataBus();
-                DelayQuarterCycle();
-                DelayQuarterCycle();
-                SetSwitchRowLine(true); // turn off U13
-                SetDataBusDirection(true); // set data lines to Write
-                return xformRow(invertedData ^ 0xFF);
+                return ASICReadSwitchRow();
             }
             break;
 
@@ -573,6 +640,7 @@ uint8_t ASICRead(uint16_t offset) {
         }
 
         case WPC_SW_JUMPER_INPUT: {
+            __disable_irq();
             SetJumperSwitchRowLine(false); // turn on U11
             SetDataBusDirection(false); // set data lines to Read
             DelayQuarterCycle();
@@ -580,15 +648,15 @@ uint8_t ASICRead(uint16_t offset) {
             SetJumperSwitchRowLine(true); // turn off U11
             SetDataBusDirection(true); // set data lines to Write
             ASICDipSwitchSetting = xformRow(invertedData ^ 0xFF);
+            __enable_irq();
+
             return ASICDipSwitchSetting;
         }
 
         case WPC_ZEROCROSS_IRQ_CLEAR:
-            if (ASICZeroCrossFlag) {
-                ASICIrqCountGI = 0;
-            }
             temp = (ASICZeroCrossFlag << 7) | (ASICRam[asicRAMOffset] & 0x7F);
             ASICZeroCrossFlag = 0;
+            SetProfile1Low();
             return temp;
 
         case WPC_PERIPHERAL_TIMER_FIRQ_CLEAR:
@@ -655,9 +723,36 @@ void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow,
 
 
 
-bool ASICDateTimeChanged() {
+bool ASICHasDateTimeChanged() {
     return ASICDateTimeHasChanged;
 }
+
+void ASICDateTimeChanged() {
+    ASICDateTimeHasChanged = true;
+
+    if (ASICDateTimeBase != NULL) {
+        // NVRAM_CLOCK_YEAR_HI (0x1800) is at offset 0
+        ASICYearHigh = ASICDateTimeBase[0]; 
+        // NVRAM_CLOCK_YEAR_LO (0x1801)
+        ASICYearLow = ASICDateTimeBase[1];  
+        // NVRAM_CLOCK_MONTH (0x1802)
+        ASICMonth = ASICDateTimeBase[2];    
+        // NVRAM_CLOCK_DAY_OF_MONTH (0x1803)
+        ASICDay = ASICDateTimeBase[3];      
+        // NVRAM_CLOCK_DAY_OF_WEEK (0x1804)
+        ASICDOW = ASICDateTimeBase[4];      
+        
+        // We skip index 5 and 6 (Hour and Valid flag) because 
+        // the live time is maintained by ASICHour and ASICMinute 
+        // via the hardware registers 0x3FFA and 0x3FFB.
+        
+        // NVRAM_CLOCK_CHECKSUM_TIME (0x1807)
+        ASICDateChecksum1 = ASICDateTimeBase[7]; 
+        // NVRAM_CLOCK_CHECKSUM_DATE (0x1808)
+        ASICDateChecksum2 = ASICDateTimeBase[8]; 
+    }    
+}
+
 
 
 uint16_t ASICGetDateTimeMemoryOffset() {
@@ -670,4 +765,48 @@ void ASICSetDateTimeMemoryPointer(uint8_t *dataTimeBase) {
 
 bool ASICGetBlanking() {
     return ASICBlankSignalHigh;
+}
+
+bool ASICRebootRequested() {
+    return ASICRequiresReboot;
+}
+
+void ASICTickGI() {
+    ASICIrqCountGI++;
+    if (ASICZeroCrossFlag) {
+        SetProfile2High();
+        for (int count=0; count<5; count++) {
+            if (GIBrightnessTracker[0][count] == GIBrightnessTracker[1][count] && 
+                GIBrightnessTracker[0][count] == GIBrightnessTracker[2][count]) {
+                GIBrightness[count] = GIBrightnessTracker[0][count];
+            }
+            
+            GIBrightnessTracker[2][count] = GIBrightnessTracker[1][count];
+            GIBrightnessTracker[1][count] = GIBrightnessTracker[0][count];
+        }
+//        for (int count=0; count<5; count++) {
+//            GIBrightnessTracker[0][count] = 8;
+//        }
+  
+        for (int count=0; count<5; count++) {
+            if (LastTriacValue & (0x01 << count)) {
+                GIBrightnessTracker[0][count] = 8;
+            } else {
+                GIBrightnessTracker[0][count] = 0;
+            }
+        }
+
+        ASICIrqCountGI = 1;
+    } else {
+        SetProfile2Low();
+    }
+}
+
+
+void ASICSetGIDimmingAlgorithm(uint8_t dimmingAlgo) {
+    ASICGIDimmingAlgo = dimmingAlgo;
+}
+
+uint8_t ASICGetGIDimmingAlgorithm() {
+    return ASICGIDimmingAlgo;
 }

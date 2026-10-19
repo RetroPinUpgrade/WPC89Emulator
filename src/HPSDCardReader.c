@@ -127,11 +127,16 @@ void HPSDUpdateRomMetadata(const char* newRomId, uint32_t newFileSize) {
 
 uint8_t HPSDCheckROMIntegrity() {
     uint32_t checkSum = 0;
+    uint32_t fileSize = metadataPtr->romMeta.fileSize;
+    
+    // Safety check
+    if (fileSize < 2048) return 0; 
+
     for (uint32_t count=0; count<1024; count++) {
-        checkSum += HPSDRomData[count] + HPSDRomData[512 * 1024 - 1 - count];
+        checkSum += HPSDRomData[count] + HPSDRomData[fileSize - 1 - count];
     }
     if (checkSum==metadataPtr->romMeta.sanity_value) return 1;
-    else return 0;
+    else return 0;    
 }
 
 const char *HPSDGetROMName() {

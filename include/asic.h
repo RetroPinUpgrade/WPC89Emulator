@@ -18,7 +18,7 @@
 #define CALL_UPDATELAMP_AFTER_TICKS     100
 #define CALL_UPDATESOLENOID_AFTER_TICKS 100
 #define WATCHDOG_ARMED_FOR_TICKS        5000
-#define CALL_ZEROCLEAR_AFTER_TICKS      2000
+#define CALL_ZEROCLEAR_AFTER_TICKS      16667
 
 // Memory Map Offsets
 #define ASIC_RAM_BASE_ADDRESS            0x3FD4
@@ -66,11 +66,26 @@
 #define WPC_ZC_IRQ_CLEAR       0x80
 #define WPC_FIRQ_CLEAR_BIT     0x80
 
+// NVRAM Offsets
+#define NVRAM_CLOCK_YEAR_HI        0x1800
+#define NVRAM_CLOCK_YEAR_LO        0x1801
+#define NVRAM_CLOCK_MONTH          0x1802
+#define NVRAM_CLOCK_DAY_OF_MONTH   0x1803
+#define NVRAM_CLOCK_DAY_OF_WEEK    0x1804
+#define NVRAM_CLOCK_HOUR           0x1805
+#define NVRAM_CLOCK_IS_VALID       0x1806
+#define NVRAM_CLOCK_CHECKSUM_TIME  0x1807
+#define NVRAM_CLOCK_CHECKSUM_DATE  0x1808
+    
+
+#define ASIC_GI_DIMMING_ORIGINAL    0
+#define ASIC_GI_DIMMING_INTERRUPT   1
 
 
 void ASICInit();
 void ASICRelease();
 void ASICReset(bool turnOnBlanking);
+void ASICSetROMSize(uint32_t romSize);
 
 int ASICGetWDExpired();
 bool ASICGetWDReset();
@@ -88,7 +103,8 @@ void ASICSetDipSwitchByte(uint8_t dipSwitch);
 uint8_t ASICGetDipSwitchByte();
 bool ASICIRQTimerEnabled();
 void ASICSetCurrentDateTime(uint16_t year, uint8_t month, uint8_t day, uint8_t DOW, uint8_t hour, uint8_t minute);
-bool ASICDateTimeChanged();
+bool ASICHasDateTimeChanged();
+void ASICDateTimeChanged();
 uint16_t ASICGetDateTimeMemoryOffset();
 void ASICSetDateTimeMemoryPointer(uint8_t *dataTimeBase);
 void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow, uint8_t *hour, uint8_t *minute);
@@ -96,10 +112,16 @@ void ASICGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *dow,
 bool ASICGetBlanking();
 
 void ASICExecuteCycle(int ticksExecuted);
+void ASICTickGI();
 bool ASICIsMemoryProtectionEnabled();
 uint8_t ASICGetRomBank();
+int32_t ASICGetBankedROMOffset();
     
 void ASICWrite(uint16_t offset, uint8_t value);
 uint8_t ASICRead(uint16_t offset);
+bool ASICRebootRequested();
+
+void ASICSetGIDimmingAlgorithm(uint8_t dimmingAlgo);
+uint8_t ASICGetGIDimmingAlgorithm();
 
 #endif // CPU_BOARD_ASIC_H

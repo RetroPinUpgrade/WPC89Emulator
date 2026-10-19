@@ -5,8 +5,16 @@
 bool DisplayUseShadowVariables = false;
 //extern volatile uint32_t clock_idx;
 
-byte RAM[RAM_SIZE];
+#define BACKUP_SRAM_BASE 0x40024000
+#define NVRAM_OFFSET     0x1000
+#define NVRAM_SIZE       0x1000
+#define PRESHIFTED_BACKUP_SRAM ((uint8_t *)(BACKUP_SRAM_BASE - NVRAM_OFFSET))
+
+byte VolatileRAM[0x1000];
+byte SecondaryRAM[SECONDARY_RAM_SIZE];
+static uint8_t *const PreshiftedSecRAM = SecondaryRAM - RAM2_LOWER_ADDRESS;
 byte *ROM;
+byte *FixedROMBase = NULL;
 uint32_t ROMSize;
 byte DisplayRAM[8192];
 byte DisplayLowPage = 0;
@@ -17,6 +25,7 @@ byte DisplayActivePage = 0;
 byte DisplayNextActivePage = 0;
 byte DisplayScanlineTrigger = 31;
 byte DisplayCurrentScanline = 0;
+bool BootSequenceFinished = false;
 bool UseLegacySoundCard = false;
 bool DisplayHighPageNeedsOverride = false;
 int memoryWrites;
@@ -29,6 +38,8 @@ uint32_t UpperAddressMask = 0x00000000;
 
 #ifndef MPU89_BUILD_FOR_COMPUTER
 #include "gd32f4xx.h"
+
+#define USE_HP_SERIAL_SOUND_CARD    0
 
 
 void MCUPortInit() {
@@ -227,16 +238,19 @@ void MPUMakePortsSafeForBlanking() {
 bool MPUInit() {
 
   // clear RAM and Display's shadow RAM
-  uint32_t *p = (uint32_t *)RAM;
-  uint32_t words = RAM_SIZE / 4;  
+  uint32_t *p = (uint32_t *)SecondaryRAM;
+  uint32_t words = SECONDARY_RAM_SIZE / 4;  
   while(words--) *p++ = 0;
+
   p = (uint32_t *)DisplayRAM;
   words = 8192 / 4;  
   while(words--) *p++ = 0;
 
   MCUPortInit();
   MPUMakePortsSafeForBlanking();
-  HPSoundCardInitConnection();
+  UseLegacySoundCard = false;
+  if (USE_HP_SERIAL_SOUND_CARD) HPSoundCardInitConnection();
+  else UseLegacySoundCard = true;
   SetDataBusDirection(true);
   ticksIrq = 0;
   protectedMemoryWriteAttempts = 0;
@@ -244,8 +258,7 @@ bool MPUInit() {
   UpperAddressMask = 0x00000000;
   ROM = NULL;
   ROMSize = 0;
-  UseLegacySoundCard = false;
-
+  BootSequenceFinished = false;
   return true;
 }
 
@@ -256,27 +269,33 @@ void MPUUseLegacySoundCard(bool useLegacy) {
 
 void MPURelease() {
 }
-
+ 
 void MPUReset(bool turnOnBlanking) {
   ticksIrq = 0;
   protectedMemoryWriteAttempts = 0;
   memoryWrites = 0;
-  CPUReset();
+  WPCSCPUReset();
   ASICReset(turnOnBlanking);
   if (ASICGetDateTimeMemoryOffset()<RAM_SIZE) {
-    ASICSetDateTimeMemoryPointer(&RAM[ASICGetDateTimeMemoryOffset()]);
+    uint8_t *nvRam = (uint8_t *)BACKUP_SRAM_BASE;
+    ASICSetDateTimeMemoryPointer(&nvRam[ASICGetDateTimeMemoryOffset()-NVRAM_OFFSET]);
   }
   DisplayLowPage = 0;
   DisplayHighPage = 0;
   DisplayLowPageStartAddress = &DisplayRAM[DisplayLowPage*512];
   DisplayHighPageStartAddress = &DisplayRAM[DisplayHighPage*512];
+  BootSequenceFinished = false;
   SetResetHigh(); // the periperal reset line is active high
 }
 
-void MPUSetROMAddress(uint8_t *romLocation, uint32_t romSize) {
+void MPUInitROM(uint8_t *romLocation, uint32_t romSize) {
   ROM = romLocation;
   ROMSize = romSize;
   UpperAddressMask = (romSize-1) & 0xF0000;
+  ASICInit();
+  ASICSetROMSize(romSize);
+  SetBlanking(false); // This is temporary -- should be done through MPU
+  FixedROMBase = ROM + UpperAddressMask;
 }
 
 void MPUSetCabinetInput(byte value) {
@@ -310,7 +329,7 @@ void MPUStart() {
 unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSteps) {
   unsigned short ticksExecuted = 0;
   while (ticksExecuted < ticksToRun) {
-    unsigned short singleTicks = CPUSteps(tickSteps);
+    unsigned short singleTicks = WPCSCPUSteps(tickSteps);
     ticksExecuted += singleTicks;
     elapsedTicks += singleTicks;
     ticksIrq += singleTicks;
@@ -319,8 +338,9 @@ unsigned short MPUExecuteCycle(unsigned short ticksToRun, unsigned short tickSte
     // and outputs lamps
     if (ticksIrq>=2048) {
       ticksIrq = 0;
-      CPUIRQ();
-      HPSoundCardUpdate(); // no need to check this constantly
+      WPCSCPUIRQ();
+      ASICTickGI();
+      if (USE_HP_SERIAL_SOUND_CARD) HPSoundCardUpdate(); // no need to check this constantly
     }
 
     ASICExecuteCycle(singleTicks);
@@ -333,39 +353,38 @@ void MPUWriteMemory(unsigned int offset, byte value) {
   //this.memoryWriteHandler.writeMemory(offset, value);
 }
 
+
 byte MPURead8(unsigned short offset) {
-/*
-  if (offset==WPC_SWITCH_COL_SELECT) {
-    uint8_t test = ReadDataBus();
-    if (test) {
-      test = 0;
-    }
+  // 1. Fixed ROM (Highest frequency: 0x8000 - 0xFFFF)
+  if (offset > BANKED_ROM_UPPER_ADDRESS) {
+      return FixedROMBase[offset];
+//      uint32_t adjustedAddress = (uint32_t)offset | UpperAddressMask;
+//      return ROM[adjustedAddress];
   }
-  SetAddressBus(offset);
-*/  
+  // 2. Banked ROM (Second highest frequency: 0x4000 - 0x7FFF)
+  else if (offset > HARDWARE_UPPER_ADDRESS) {
+      // Inlined MPUBankswitchedRead logic to avoid branch/call overhead
+      return ROM[(offset) + ASICGetBankedROMOffset()];
+  }
+  // 3. Main RAM (0x0000 - RAM1_UPPER_ADDRESS)
+  else if (offset < RAM1_UPPER_ADDRESS) {
+      if (offset<NVRAM_OFFSET) return VolatileRAM[offset];
+      return PRESHIFTED_BACKUP_SRAM[offset];
+  }
+  // 4. Secondary RAM (RAM2)
+  else if (offset >= RAM2_LOWER_ADDRESS && offset <= RAM2_UPPER_ADDRESS) {
+      return PreshiftedSecRAM[offset];
+  } 
+  // 5. Hardware I/O (Fallback for remaining addresses <= HARDWARE_UPPER_ADDRESS)
+  else {
+      return MPUHardwareRead(offset);
+  }
+}
+
+/*
+byte MPURead8(unsigned short offset) {
+
   if (offset<RAM1_UPPER_ADDRESS) { // Anything less than 0x3000 (technically 0x2000-0x2FFF is no man's land
-
-    /*
-    if (offset>=0x1800 && offset<=0x1808) {
-      volatile uint16_t year = RAM[0x1800]*256 + RAM[0x1801];
-      volatile uint8_t month = RAM[0x1802];
-      volatile uint8_t day = RAM[0x1803];
-      volatile uint8_t dow = RAM[0x1804];
-      volatile uint8_t hour = RAM[0x1805];
-      volatile uint8_t valid = RAM[0x1806];
-      volatile uint8_t checksumTime = RAM[0x1807];
-      volatile uint8_t checksumDate = RAM[0x1808];
-      (void)year;
-      (void)month;
-      (void)day;
-      (void)dow;
-      (void)hour;
-      (void)valid;
-      (void)checksumTime;
-      (void)checksumDate;
-    }
-    */
-
     return RAM[offset];
   } else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) { // This can probably go?
     return RAM[offset];
@@ -382,11 +401,25 @@ byte MPURead8(unsigned short offset) {
 
   return 0;
 }
+*/
 
 void MPUWrite8(unsigned short offset, byte value) {
-  if (offset<=RAM1_UPPER_ADDRESS) RAM[offset] = value;
-  else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) RAM[offset] = value;
-  else if (offset<=HARDWARE_UPPER_ADDRESS) MPUHardwareWrite(offset, value);
+  if (offset<=RAM1_UPPER_ADDRESS) {
+
+    if (offset<NVRAM_OFFSET) {
+      VolatileRAM[offset] = value;
+      return;
+    }
+    
+    PRESHIFTED_BACKUP_SRAM[offset] = value;
+    if (offset>=NVRAM_CLOCK_YEAR_HI && offset<=NVRAM_CLOCK_CHECKSUM_DATE) {
+      ASICDateTimeChanged();
+    }
+  } else if (offset>=RAM2_LOWER_ADDRESS && offset<=RAM2_UPPER_ADDRESS) {
+    PreshiftedSecRAM[offset] = value;
+  } else if (offset<=HARDWARE_UPPER_ADDRESS) {
+    MPUHardwareWrite(offset, value);
+  }
 }
 
 byte MPUBankswitchedRead(unsigned int offset) {
@@ -398,8 +431,8 @@ byte MPUBankswitchedRead(unsigned int offset) {
   return 0;
 }
 
-
 __attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t data) {
+  __disable_irq();
   // 1. Setup Phase (Bus is idle, Transceiver is off)
   SetAddressBus(WPCS_DATA);
   SetDataBus(data);
@@ -444,11 +477,13 @@ __attribute__((always_inline)) static inline void WriteLegacySoundCard(uint8_t d
   SetWDENHigh();    
   SetIOENHigh();
   SetRWHigh();    // RW High (Return to Read/Idle)
+  __enable_irq();
 }
 
 __attribute__((always_inline)) static inline uint8_t ReadLegacySoundCard(uint16_t address) {
   uint8_t result;
 
+  __disable_irq();
   SetAddressBus(address);    
   // 2. Prepare for Read: Set Port E to Input (High-Z)
   SetDataBusDirection(false); 
@@ -481,12 +516,14 @@ __attribute__((always_inline)) static inline uint8_t ReadLegacySoundCard(uint16_
   // Restore Data Bus to Output
   SetDataBusDirection(true);
 
+  __enable_irq();
   return result;
 }
 
 
 
 __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
+  __disable_irq();
   SetAddressBus(address);
   SetDataBus(data);
   SetRWLow();  // RW Low
@@ -495,10 +532,10 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
   SetIOENLow(); // falling edge of E, we put up address, RW
 
   // Wait for next cycle
+  __disable_irq();
   if (ReadNotESignal()) {
     while (ReadNotESignal()); 
   }
-  __disable_irq();
   while (!ReadNotESignal()); 
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
@@ -517,10 +554,10 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();  
-  __enable_irq();
   SetIOENHigh();
   SetRWHigh();    // RW High (Return to Read/Idle)
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __enable_irq();
 }
 
 
@@ -528,7 +565,7 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
 
 void MPUHardwareWrite(unsigned int offset, byte value) {
   // write/mirror value to ram, so its visible using the memory monitor
-  RAM[offset] = value;
+  //RAM[offset] = value;
   
   if (offset>=WPC_FLIPTRONICS_FLIPPER_PORT_A && offset<=WPC_ZEROCROSS_IRQ_CLEAR) {
     if (offset==WPCS_DATA) {
@@ -536,6 +573,9 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
         HPSoundCardHandleCommand(value, elapsedTicks);
       } else {
         WriteLegacySoundCard(value);
+      }
+      if (BootSequenceFinished==false) {
+        BootSequenceFinished = true;
       }
       return;
     }
@@ -550,13 +590,16 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   } else if (offset>=DISPLAY_RAM_UPPER_PAGE_START && offset<=DISPLAY_RAM_UPPER_PAGE_END) {
     // Trying to write to the high page of display
     DisplayHighPageStartAddress[offset-DISPLAY_RAM_UPPER_PAGE_START] = value;
-    uint16_t currentPC = CPUGetPC();
+    WriteDisplay(offset, value);
+    /*
+    uint16_t currentPC = WPCSCPUGetPC();
     if (currentPC!=0x60DE) {
       WriteDisplay(offset, value);
       DisplayHighPageNeedsOverride = false;
     } else {
       DisplayHighPageNeedsOverride = true;
     }
+    */
   } else if (offset==WPC_DMD_LOW_PAGE) {
     DisplayLowPage = value & 0x0F;
     DisplayLowPageStartAddress = &DisplayRAM[DisplayLowPage*512];
@@ -568,7 +611,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
   } else if (offset==WPC_DMD_ACTIVE_PAGE) {
     DisplayNextActivePage = value & 0x0F;
     WriteDisplay(offset, value);
-    for (int count=0; count<2400; count++) __NOP();
+//    for (int count=0; count<2400; count++) __NOP();
   } else if (offset==WPC_DMD_SCANLINE /*|| offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR*/) {
     DisplayScanlineTrigger = value;
     //if (offset==WPC_PERIPHERAL_TIMER_FIRQ_CLEAR) ASICFirqSourceDmd(false);
@@ -583,6 +626,7 @@ void MPUHardwareWrite(unsigned int offset, byte value) {
 uint8_t ReadDisplayRegister(uint16_t address) {
   uint8_t result;
 
+  __disable_irq();
   SetAddressBus(address);    
   SetDataBusDirection(false); 
   SetRWHigh();
@@ -594,7 +638,6 @@ uint8_t ReadDisplayRegister(uint16_t address) {
     while (ReadNotESignal()); 
   }
   while (!ReadNotESignal()); 
-  __disable_irq();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
@@ -611,7 +654,6 @@ uint8_t ReadDisplayRegister(uint16_t address) {
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   result = ReadDataBus();
-  __enable_irq();
   
   // 7. Cleanup: Disable external hardware BEFORE restoring outputs
   SetIOENHigh();
@@ -620,6 +662,7 @@ uint8_t ReadDisplayRegister(uint16_t address) {
 
   // Restore Data Bus to Output
   SetDataBusDirection(true);
+  __enable_irq();
   return result;
 }
 
@@ -628,6 +671,7 @@ uint8_t ReadDisplayRegister(uint16_t address) {
 __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   uint8_t result;
 
+  __disable_irq();
   SetAddressBus(address);    
   SetDataBusDirection(false); 
   SetRWHigh();
@@ -641,7 +685,6 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   while (!ReadNotESignal()); 
   while (ReadNotESignal()); 
   while (!ReadNotESignal()); 
-  __disable_irq();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
@@ -658,7 +701,6 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   result = ReadDataBus();
-  __enable_irq();
   
   // 7. Cleanup: Disable external hardware BEFORE restoring outputs
   SetIOENHigh();
@@ -669,6 +711,7 @@ __attribute__((always_inline)) inline uint8_t ReadDisplay(uint16_t address) {
   SetDataBusDirection(true);
   while (!ReadNotESignal()); 
   while (ReadNotESignal()); 
+  __enable_irq();
 
   return result;
 }
@@ -818,23 +861,30 @@ byte MPUGetTriggerScanline() {
 }
 
 void MPUFIRQ() {
-  CPUFIRQ();
+  WPCSCPUFIRQ(true);
 }
 
 uint8_t *MPUGetRAMAtIndex(uint16_t ramIndex) {
   if (ramIndex>=RAM_SIZE) return NULL;
-  return &RAM[ramIndex];
+  if (ramIndex<NVRAM_OFFSET) return &VolatileRAM[ramIndex];
+
+  uint8_t *nvRam = (uint8_t *)BACKUP_SRAM_BASE;
+  return &nvRam[ramIndex - NVRAM_OFFSET];  
 }
 
-
 uint8_t *MPUGetNVRAMStart() {
-  return &RAM[0x16A1];
+  return (uint8_t *)BACKUP_SRAM_BASE; 
 }
 
 uint16_t MPUGetNVRAMSize() {
-  return 0x95F;
+  return NVRAM_SIZE;
 }
 
 bool MPUDisplayHighPageOverride() {
   return DisplayHighPageNeedsOverride;
+}
+
+
+bool MPUBootSequenceFinished() {
+  return BootSequenceFinished;
 }

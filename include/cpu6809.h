@@ -2,15 +2,26 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-bool CPUSetCallbacks(void (*memoryWriteFunction)(uint16_t, uint8_t), uint8_t (*memoryReadFunction)(uint16_t));
-void CPUIRQ();
-void CPUFIRQ();
-void CPUNMI();
 
-void CPUReset();
-uint16_t CPUStep();
-uint16_t CPUSteps(uint16_t numTicks);
-uint16_t CPUGetPC();
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void WPCSCPUIRQ();
+void WPCSCPUFIRQ(bool firqOn);
+void WPCSCPUNMI();
+
+void WPCSCPUReset();
+uint16_t WPCSCPUStep();
+uint16_t WPCSCPUSteps(uint16_t numTicks);
+uint16_t WPCSCPUGetPC();
+
+void WPCSCPUEnableLogging(bool loggingOn);
+
+#ifdef __cplusplus
+}
+#endif
+
 
 #define CPU_6809_H
 #endif

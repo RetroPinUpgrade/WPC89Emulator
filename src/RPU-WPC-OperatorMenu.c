@@ -122,6 +122,30 @@ bool RPU_WPC_CheckForMenuRequest(bool readFromPort) {
 }
 
 
+void RPU_WPC_MenuStart() {
+    RPUWPCMenuPage = 0;
+    RPUWPCLastMenuPage = 0xFF;
+    RPUWPCSubMenuPage = 0;
+    RPUWPCLastSubMenuPage = 0xFF;
+    RPUWPCVolumeChange = 1;
+    RPUWPCLastCabinetInput = 0;
+    
+    RPUWPCLastCabinetInputTicks = 0;
+    RPUWPCMenuStartTicks = 0;
+    RPUWPCMenuPageChangeTicks = 0;
+    RPUWPCSettingChangeStartTicks = 0;
+    
+    ROMFlashResult = 0xFF;
+    TotalRAMAttributes = 0;
+    CurrentRAMAttribute = 0;
+    LastRAMAttribute = 0xFFFF;
+    NumFilesOnSDCard = 0;
+
+    RPU_WPC_DisplayInit();
+}
+
+
+
 void ChangeRelativeVolume(int volToChange, int changeAmount) {
     if (volToChange==0 || volToChange>3) return;
     uint8_t incomingVol = 0xFF;

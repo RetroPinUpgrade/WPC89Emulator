@@ -23,6 +23,10 @@
 #define SYSTEM_ROM_LOWER_ADDRESS        0x8000
 #define SYSTEM_ROM_UPPER_ADDRESS        0xFFFF
 
+#define SECONDARY_RAM_SIZE              0x03AF
+
+#define WPC_DMD_BRIGHTNESS              0x3FB4
+
 #define WPC_DMD_HIGH_PAGE               0x3FBC
 #define WPC_DMD_SCANLINE                0x3FBD
 #define WPC_DMD_LOW_PAGE                0x3FBE
@@ -48,7 +52,7 @@ void MPURelease();
 void MPUReset(bool turnOnBlanking);
 void MPUMakePortsSafeForBlanking();
 void MPUUseLegacySoundCard(bool useLegacy);
-void MPUSetROMAddress(uint8_t *romLocation, uint32_t romSize);
+void MPUInitROM(uint8_t *romLocation, uint32_t romSize);
 void MPUSetCabinetInput(byte value);
 void MPUSetSwitchInput(int switchNr, int optionalValue);
 void MPUSetFliptronicsInput(int value, int optionalValue);
@@ -79,6 +83,8 @@ void MPUVerticalRefresh();
 byte MPUGetTriggerScanline();
 void MPUMPUActivateScanlineTrigger();
 bool MPUDisplayHighPageOverride();
+
+bool MPUBootSequenceFinished();
 
 void WriteDisplay(uint16_t address, uint8_t data);
 uint8_t ReadDisplay(uint16_t address);
@@ -367,6 +373,7 @@ __attribute__((always_inline)) static inline void StrobeLampRow(void) {
 }
 
 __attribute__((always_inline)) static inline void SetLampRow(uint8_t rowValue) {
+    __disable_irq();
     SetDataBus(rowValue);
     SetDRLine(false);
     DelayQuarterCycle();
@@ -374,6 +381,7 @@ __attribute__((always_inline)) static inline void SetLampRow(uint8_t rowValue) {
     StrobeLampRow();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 // This timing was tested with a reproduction Power Driver board
@@ -393,6 +401,7 @@ __attribute__((always_inline)) static inline void StrobeLampCol(void) {
 }
 
 __attribute__((always_inline)) static inline void SetLampCol(uint8_t colValue) {
+    __disable_irq();
     SetDataBus(colValue);
     DelayQuarterCycle();
     DelayQuarterCycle();
@@ -403,6 +412,7 @@ __attribute__((always_inline)) static inline void SetLampCol(uint8_t colValue) {
     DelayQuarterCycle();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 __attribute__((always_inline)) static inline void StrobeTriac(void) {
@@ -434,11 +444,13 @@ __attribute__((always_inline)) static inline void StrobeSol1(void) {
 
 
 __attribute__((always_inline)) static inline void SetSol1(uint8_t solValue) {
+    __disable_irq();
     SetDataBus(solValue);
     SetDRLine(false);
     StrobeSol1();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol2(void) {
@@ -455,11 +467,13 @@ __attribute__((always_inline)) static inline void StrobeSol2(void) {
 }
 
 __attribute__((always_inline)) static inline void SetSol2(uint8_t solValue) {
+    __disable_irq();
     SetDataBus(solValue);
     SetDRLine(false);
     StrobeSol2();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol3(void) {
@@ -476,11 +490,13 @@ __attribute__((always_inline)) static inline void StrobeSol3(void) {
 }
 
 __attribute__((always_inline)) static inline void SetSol3(uint8_t solValue) {
+    __disable_irq();
     SetDataBus(solValue);
     SetDRLine(false);
     StrobeSol3();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 __attribute__((always_inline)) static inline void StrobeSol4(void) {
@@ -497,11 +513,13 @@ __attribute__((always_inline)) static inline void StrobeSol4(void) {
 }
 
 __attribute__((always_inline)) static inline void SetSol4(uint8_t solValue) {
+    __disable_irq();
     SetDataBus(solValue);
     SetDRLine(false);
     StrobeSol4();
     DelayQuarterCycle();
     SetDRLine(true);
+    __enable_irq();
 }
 
 __attribute__((always_inline)) static inline bool FIRQTriggered(void) {
@@ -522,4 +540,20 @@ __attribute__((always_inline)) static inline bool ReadNotESignal(void) {
 
 __attribute__((always_inline)) static inline bool ReadNotQSignal(void) {
     return (GPIO_ISTAT(GPIOD) & GPIO_PIN_1) != 0;
+}
+
+// Control for PA2 (Profile Pin 1)
+__attribute__((always_inline)) static inline void SetProfile1High() {
+    GPIO_BOP(GPIOA) = (1U << 2);
+}
+__attribute__((always_inline)) static inline void SetProfile1Low() {
+    GPIO_BC(GPIOA) = (1U << 2);
+}
+
+// Control for PA3 (Profile Pin 2)
+__attribute__((always_inline)) static inline void SetProfile2High() {
+    GPIO_BOP(GPIOA) = (1U << 3);
+}
+__attribute__((always_inline)) static inline void SetProfile2Low() {
+    GPIO_BC(GPIOA) = (1U << 3);
 }
