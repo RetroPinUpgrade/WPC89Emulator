@@ -88,7 +88,7 @@ bool MPUBootSequenceFinished();
 
 void WriteDisplay(uint16_t address, uint8_t data);
 uint8_t ReadDisplay(uint16_t address);
-
+void MPURestoreDisplayState(void);
 
 // Simple delay helper: ~125ns at 240MHz (approx 30 cycles)
 __attribute__((always_inline)) static inline void DelayQuarterCycle(void) {

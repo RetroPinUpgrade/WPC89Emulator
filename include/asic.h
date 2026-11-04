@@ -124,4 +124,9 @@ bool ASICRebootRequested();
 void ASICSetGIDimmingAlgorithm(uint8_t dimmingAlgo);
 uint8_t ASICGetGIDimmingAlgorithm();
 
+void ASICSetFlipperStateOverride(bool overrideOn, bool overrideValue);
+bool ASICIsFlipperActive();
+uint8_t ASICReadUnfilteredCabinetSwitches();
+void ASICResetCabinetFilter(void);
+
 #endif // CPU_BOARD_ASIC_H

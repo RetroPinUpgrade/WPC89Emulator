@@ -5,7 +5,8 @@ void RPU_WPC_SetupPorts();
 bool RPU_WPC_CheckForMenuRequest(bool readFromPort);
 void RPU_WPC_MenuStart();
 bool RPU_WPC_Menu(uint32_t curTicks);
-bool RPU_WPC_MenuRequiresReset();
+bool RPU_WPC_ROMRequiresReset();
+bool RPU_WPC_RAMRequiresReset();
 
 #define RPU_WPC_OPERATOR_MENU_H
 #endif

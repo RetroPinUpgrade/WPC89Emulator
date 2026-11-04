@@ -17,5 +17,10 @@ const char *HPSDGetROMName();
 uint8_t* HPSDGetROMPointer(void);
 uint32_t HPSDGetROMSize(void);
 
+bool HPSDSaveGameState(const char* description);
+bool HPSDLoadGameState(const char* filename);
+uint16_t HPSDGetGameStateFiles(const char* romName, char fileList[][13], uint16_t maxFiles);
+bool HPSDGetDescription(const char *filename, char *description, int maxDescriptionLen);
+
 #define HP_SD_CARD_READER_H
 #endif
