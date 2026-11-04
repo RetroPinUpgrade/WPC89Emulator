@@ -11,6 +11,22 @@
 
 extern volatile uint8_t GIBrightness[5];
 extern volatile uint8_t LastTriacValue;
+uint8_t HPDisplayBrightness = 0xFF;
+uint8_t HPDisplayRefresh = 4;
+uint8_t HPDisplayCanStoreRefresh = 0;
+
+int16_t StartingSynthVolL = 0x8000;
+int16_t StartingSynthVolR = 0x8000;
+int16_t StartingDACVolL = 0x8000;
+int16_t StartingDACVolR = 0x8000;
+int16_t StartingCVSDVolL = 0x8000;
+int16_t StartingCVSDVolR = 0x8000;
+uint8_t RelSynthVol = 25;
+uint8_t RelSynthBal = 16;
+uint8_t RelDACVol = 25;
+uint8_t RelDACBal = 16;
+uint8_t RelCVSDVol = 25;
+uint8_t RelCVSDBal = 16;
 
 void SwitchTo240MHz(void) {
     /* 1. Reset RCU to a known state */
@@ -189,15 +205,15 @@ void Init_DMA_Quadrature_Clocks(void) {
     timer_parameter_struct timer_init_para;
     timer_deinit(TIMER2);
 
-    // Assuming a 200MHz System Clock:
-    // 200MHz / 25 ticks = 8MHz update rate (125ns per state)
-    // 8MHz / 4 states = 2MHz full quadrature cycle (500ns)
+    // Assuming a 240MHz System Clock:
     timer_init_para.prescaler         = 0;
     timer_init_para.alignedmode       = TIMER_COUNTER_EDGE;
     timer_init_para.counterdirection  = TIMER_COUNTER_UP;
-    // 120MHz / 15 ticks = 8MHz update rate (125ns per state)
-    // 120MHz / 12 ticks = 10MHz update rate (100ns per state)
-    timer_init_para.period = 12;
+    // 120MHz / (14 ticks + 1) / 4 = 2MHz E & Q clock
+    // 120MHz / (13 ticks + 1) / 4 = 2.17MHz E & Q clock
+    // 120MHz / (12 ticks + 1) / 4 = 2.27MHz E & Q clock
+    // 120MHz / (11 ticks + 1) / 4 = 2.5MHz E & Q clock
+    timer_init_para.period = 11;
     timer_init_para.clockdivision     = TIMER_CKDIV_DIV1;
     timer_init_para.repetitioncounter = 0;
     timer_init(TIMER2, &timer_init_para);
@@ -207,6 +223,82 @@ void Init_DMA_Quadrature_Clocks(void) {
     timer_enable(TIMER2);
 }
 
+
+// Store the current speed (default to 3 = 2.50 MHz)
+#define EQ_SPEED_200    0
+#define EQ_SPEED_217    1
+#define EQ_SPEED_227    2
+#define EQ_SPEED_250    3
+static uint8_t CurrentDMASpeed = EQ_SPEED_217; 
+
+void LoadRefreshRates() {
+    // bits 0-3 is CurrentDMASpeed
+    // bits 4-7 is HPDisplayRefresh
+    uint32_t bkp = (RTC_BKP4 & 0x000000FF);
+    CurrentDMASpeed = (bkp & 0x00000003);
+    HPDisplayRefresh = (bkp>>4) & 0x0000000F;
+    if (HPDisplayRefresh > 4 || (bkp&0x00000008)) {
+        HPDisplayRefresh = 4;
+        // looks invalid, so store it
+        bkp = (RTC_BKP4 & 0xFFFFFF00) | (0x00000042);
+        RTC_BKP4 = bkp;
+    }
+}
+
+void StoreRefreshRates() {
+    uint32_t bkp = (RTC_BKP4 & 0xFFFFFF00);
+    if (CurrentDMASpeed>3) CurrentDMASpeed = 3;
+    if (HPDisplayRefresh>4) HPDisplayRefresh = 4;
+    bkp |= CurrentDMASpeed;
+    bkp |= (HPDisplayRefresh<<4);
+    RTC_BKP4 = bkp;
+}
+
+
+void SetDisplayDMASpeed(uint8_t dmaSpeed, bool storeThisSpeed) {
+    if (dmaSpeed > 3) dmaSpeed = 3;
+    if (storeThisSpeed) {
+        CurrentDMASpeed = dmaSpeed;
+        StoreRefreshRates();
+    }
+    
+    uint32_t period = 11; 
+    switch(dmaSpeed) {
+        case 0: period = 14; break; // 2.00 MHz
+        case 1: period = 13; break; // 2.17 MHz
+        case 2: period = 12; break; // 2.27 MHz
+        case 3: period = 11; break; // 2.50 MHz
+    }
+    
+    // Change the timer's auto-reload value on the fly
+    timer_autoreload_value_config(TIMER2, period);
+}
+
+uint8_t GetDMDControllerRefreshSpeed() {
+    return HPDisplayRefresh;
+}
+
+void SetDMDControllerRefreshSpeed(uint8_t refreshSpeed) {
+    // Refresh Rate = Dot Clock / 8,560
+    // Default Refresh Rate = 122Hz    
+    // refreshSpeed = 0: 122Hz, 1: 130Hz, 2: 140Hz, 3: 150Hz, 4: 209Hz
+    if (refreshSpeed>4) refreshSpeed = 4;
+    HPDisplayRefresh = refreshSpeed;
+    StoreRefreshRates();
+    uint8_t registerValue = 0x80 + refreshSpeed;
+    if (HPDisplayCanStoreRefresh) WriteDisplay(WPC_DMD_BRIGHTNESS, registerValue);
+}
+
+void SetDMDControllerBrightness(uint8_t newBrightness) {
+    if (newBrightness<20) newBrightness = 20;
+    if (newBrightness>100) newBrightness = 100;
+    HPDisplayBrightness = newBrightness;
+    WriteDisplay(WPC_DMD_BRIGHTNESS, newBrightness);
+}
+
+uint8_t GetDisplayDMASpeed(void) {
+    return CurrentDMASpeed;
+}
 
 // This timer sets up E & Q lines at 2MHz (with Q leading E by 90 degrees)
 // on PA9 and PA10 (for the DMD Controller or any other periperals that need it)
@@ -266,6 +358,113 @@ void InitProfilePins(void) {
 }
 
 
+
+
+// Volume gain as a fraction num/den (piecewise linear, 25 = unity)
+static void volGain(uint8_t relVol, int32_t *num, int32_t *den)
+{
+    if (relVol <= 25) {
+        *num = 25 + 4 * (int32_t)relVol;   // 25..125  -> 0.2..1.0
+        *den = 125;
+    } else {
+        if (relVol > 31) relVol = 31;
+        *num = (int32_t)relVol + 5;        // 31..36   -> 1.0..1.2
+        *den = 30;
+    }
+}
+
+// Balance gains as numerators over 15
+static void balGain(uint8_t relBal, int32_t *numL, int32_t *numR)
+{
+    if (relBal > 31) relBal = 31;
+    if (relBal < 1)  relBal = 1;           // treat 0 as full left
+
+    *numL = (relBal <= 16) ? 15 : (31 - (int32_t)relBal);  // 15..0
+    *numR = (relBal >= 16) ? 15 : ((int32_t)relBal - 1);   // 0..15
+}
+
+static void scaleVolBal(int16_t *volL, int16_t *volR,
+                        uint8_t relVol, uint8_t relBal)
+{
+    int32_t vNum, vDen, bL, bR;
+
+    volGain(relVol, &vNum, &vDen);
+    balGain(relBal, &bL, &bR);
+
+    const int32_t den  = vDen * 15;
+    const int32_t half = den / 2;
+
+    *volL = (int16_t)(((int32_t)*volL * vNum * bL + half) / den);
+    *volR = (int16_t)(((int32_t)*volR * vNum * bR + half) / den);
+}
+
+// sendToSoundCard = 0 means never send
+// sendToSoundCard = 1 means only send if it has changed
+// sendToSoundCard = 2 means always send
+void SetRelativeVolumeAndBalance(   uint8_t synthVol, uint8_t synthBal,
+                                    uint8_t DACVol, uint8_t DACBal,
+                                    uint8_t CVSDVol, uint8_t CVSDBal,
+                                    uint8_t sendToSoundCard ) {
+    uint32_t oldBkp = RTC_BKP5;
+    uint32_t newBkp = 0;
+
+    newBkp |= (synthVol & 0x1F)<<25;
+    newBkp |= (synthBal & 0x1F)<<20;
+    newBkp |= (DACVol & 0x1F)<<15;
+    newBkp |= (DACBal & 0x1F)<<10;
+    newBkp |= (CVSDVol & 0x1F)<<5;
+    newBkp |= (CVSDBal & 0x1F);
+
+    if (sendToSoundCard && HPAdvancedWAVSoundCardPresent()) {
+        uint8_t oldSynthVol = (oldBkp>>25) & 0x1F;
+        uint8_t oldSynthBal = (oldBkp>>20) & 0x1F;
+        uint8_t oldDACVol = (oldBkp>>15) & 0x1F;
+        uint8_t oldDACBal = (oldBkp>>10) & 0x1F;
+        uint8_t oldCVSDVol = (oldBkp>>5) & 0x1F;
+        uint8_t oldCVSDBal = (oldBkp) & 0x1F;
+
+        if (sendToSoundCard==2 || oldSynthVol!=synthVol || oldSynthBal!=synthBal) {
+            int16_t newL = StartingSynthVolL;
+            int16_t newR = StartingSynthVolR;
+            scaleVolBal(&newL, &newR, synthVol, synthBal);
+            HPSoundCardSetSynthVol(newL, newR);
+        }
+
+        if (sendToSoundCard==2 || oldDACVol!=DACVol || oldDACBal!=DACBal) {
+            int16_t newL = StartingDACVolL;
+            int16_t newR = StartingDACVolR;
+            scaleVolBal(&newL, &newR, DACVol, DACBal);
+            HPSoundCardSetDACVol(newL, newR);
+        }
+
+        if (sendToSoundCard==2 || oldCVSDVol!=CVSDVol || oldCVSDBal!=CVSDBal) {
+            int16_t newL = StartingCVSDVolL;
+            int16_t newR = StartingCVSDVolR;
+            scaleVolBal(&newL, &newR, CVSDVol, CVSDBal);
+            HPSoundCardSetCVSDVol(newL, newR);
+        }        
+    }
+    RTC_BKP5 = newBkp;
+}
+
+void GetRelativeVolumeAndBalance(   uint8_t *synthVol, uint8_t *synthBal, 
+                                    uint8_t *DACVol, uint8_t *DACBal, 
+                                    uint8_t *CVSDVol, uint8_t *CVSDBal ) {
+    if (synthVol!=NULL) *synthVol = (RTC_BKP5>>25) & 0x1F;
+    if (synthBal!=NULL) *synthBal = (RTC_BKP5>>20) & 0x1F;
+    if (DACVol!=NULL) *DACVol = (RTC_BKP5>>15) & 0x1F;
+    if (DACBal!=NULL) *DACBal = (RTC_BKP5>>10) & 0x1F;
+    if (CVSDVol!=NULL) *CVSDVol = (RTC_BKP5>>5) & 0x1F;
+    if (CVSDBal!=NULL) *CVSDBal = (RTC_BKP5) & 0x1F;
+}
+
+void SetInitialVolumeAndBalance() {
+    uint8_t synthVol, synthBal, DACVol, DACBal, CVSDVol, CVSDBal;
+    GetRelativeVolumeAndBalance(&synthVol, &synthBal, &DACVol, &DACBal, &CVSDVol, &CVSDBal);
+    SetRelativeVolumeAndBalance(synthVol, synthBal, DACVol, DACBal, CVSDVol, CVSDBal, 2);
+}
+
+
 #define RTC_PROOF_VALUE     0x3208  // stored in RTC_BKP0
 // The backup domain is anything that needs to run on 
 // clock power or needs to be stored between power cycles
@@ -311,6 +510,13 @@ void BackupDomainInit(void) {
         // This function handles the INITM bit and WPK keys automatically
         rtc_init(&rtc_init_para);
         /* --- PRESCALER CONFIGURATION END --- */
+
+        // Set factory defaults for GI and Display on fresh device
+        RTC_BKP3 = 0x88888000; // All Game Brightness = 8, Bulb Types = 0
+        RTC_BKP4 = 0x88888041; // All Attract Brightness = 8, Refresh = 4, Speed = 1
+
+        // This funciton sets up RTC_BKP5 with volumes & balance
+        SetRelativeVolumeAndBalance(25, 16, 25, 16, 25, 16, 0);
         
         RTC_BKP1 = RTC_PROOF_VALUE;
     } else {
@@ -445,10 +651,167 @@ void TestPorts() {
 
 
 
-// 0 = 60Hz, 1 = 50Hz
+uint8_t DetectACFrequency(void) {
+    uint32_t startTicks = TwoMHzTicksSinceStart();
+    uint32_t currentTicks = startTicks;
+    uint8_t lastZC = ReadZC();
+    uint32_t firstEdgeTicks = 0;
+    uint32_t lastEdgeTicks = startTicks;
+    uint32_t edgeCount = 0;
+    
+    bool firstEdgeFound = false;
+    bool samplingComplete = false;
+
+    // Step 1: Wait for the first valid edge to synchronize.
+    // Exit if we find an edge, or if 100ms (200,000 ticks) passes with no edges.
+    while (!firstEdgeFound && (currentTicks - startTicks) <= 200000) {
+        currentTicks = TwoMHzTicksSinceStart();
+        uint8_t currentZC = ReadZC();
+        
+        if (currentZC != lastZC) {
+            lastZC = currentZC;
+            firstEdgeTicks = currentTicks;
+            lastEdgeTicks = currentTicks;
+            firstEdgeFound = true;
+        }
+    }
+
+    if (!firstEdgeFound) {
+        return 2; // No ZC detected
+    }
+
+    // Step 2: Sample continuously until we capture a valid edge after 150ms.
+    // Exit if sampling finishes, or if 50ms (100,000 ticks) passes since the last edge.
+    while (!samplingComplete && (currentTicks - lastEdgeTicks) <= 100000) {
+        currentTicks = TwoMHzTicksSinceStart();
+        uint8_t currentZC = ReadZC();
+        
+        if (currentZC != lastZC) {
+            lastZC = currentZC;
+
+            // 4ms debounce (8,000 ticks). Edges faster than this are ignored.
+            if ((currentTicks - lastEdgeTicks) > 8000) {
+                lastEdgeTicks = currentTicks;
+                edgeCount++;
+
+                // Once we have gathered at least 150ms (300,000 ticks) of validated edges,
+                // mark sampling complete exactly on this edge.
+                if ((currentTicks - firstEdgeTicks) >= 300000) {
+                    samplingComplete = true;
+                }
+            }
+        }
+    }
+
+    if (!samplingComplete || edgeCount == 0) {
+        return 3; // ZC signal died mid-read or frequency was too slow
+    }
+
+    // Step 3: Calculate the average duration of a half-cycle
+    uint32_t elapsedTicks = lastEdgeTicks - firstEdgeTicks;
+    uint32_t ticksPerHalfCycle = elapsedTicks / edgeCount;
+
+    // 2MHz Ticks per half-cycle:
+    // 70Hz = ~14,285 ticks
+    // 60Hz = ~16,666 ticks
+    // Midpoint = ~18,333 ticks
+    // 50Hz = 20,000 ticks
+    // 40Hz = 25,000 ticks
+
+    if (ticksPerHalfCycle < 14285) {
+        return 4; // > 70Hz
+    } else if (ticksPerHalfCycle < 18333) {
+        return 0; // 60Hz
+    } else if (ticksPerHalfCycle < 25000) {
+        return 1; // 50Hz
+    } else {
+        return 3; // < 40Hz
+    }
+}
+
+// AC frequency can be one of five values
+// 0 = 60Hz, 1 = 50Hz (valid values)
+// 2 - no ZC detected
+// 3 - frequency is below 40Hz (bad ZC line)
+// 4 - frequency is above 70Hz (bad ZC line)
 uint8_t ACFrequency = 0; 
+
 // 0 = Incandescent, 1 = LED
 uint8_t GIBulbTypes[5] = {0, 0, 0, 0, 0}; 
+uint8_t GIMaxGameBrightness[5] = {8, 8, 8, 8, 8};
+uint8_t GIMaxAttractBrightness[5] = {8, 8, 8, 8, 8};
+
+void SaveGISettings(void) {
+    uint32_t bkp = 0;
+    for (int i = 0; i < 5; i++) {
+        // Bits 0-4: Bulb Types
+        bkp |= (GIBulbTypes[i] & 0x01) << i;
+        // Bits 8-27: Max Game Brightness (4 bits each)
+        bkp |= (GIMaxGameBrightness[i] & 0x0F) << (8 + (i * 4));
+    }
+    // PMU backup write is already enabled globally in main
+    RTC_BKP3 = bkp;
+
+    bkp = RTC_BKP4 & 0x000000FF;
+    for (int i = 0; i < 5; i++) {
+        // Bits 8-27: Max Attract Brightness (4 bits each)
+        bkp |= (GIMaxAttractBrightness[i] & 0x0F) << (8 + (i * 4));
+    }    
+    RTC_BKP4 = bkp;
+}
+
+void LoadGISettings(void) {
+    uint32_t bkp = RTC_BKP3;
+    uint8_t valid = 1;
+    
+    // Validate the brightness values to detect an uninitialized register
+    for (int i = 0; i < 5; i++) {
+        uint8_t brt = (bkp >> (8 + (i * 4))) & 0x0F;
+        if (brt < 1 || brt > 8) {
+            valid = 0;
+            break;
+        }
+    }
+
+    if (valid) {
+        for (int i = 0; i < 5; i++) {
+            GIBulbTypes[i] = (bkp >> i) & 0x01;
+            GIMaxGameBrightness[i] = (bkp >> (8 + (i * 4))) & 0x0F;
+        }
+    } else {
+        // Apply default values if the register is empty/corrupt
+        for (int i = 0; i < 5; i++) {
+            GIBulbTypes[i] = 0;
+            GIMaxGameBrightness[i] = 8;
+        }
+        SaveGISettings();
+    }
+
+    bkp = RTC_BKP4;
+    valid = 1;
+    
+    // Validate the brightness values to detect an uninitialized register
+    for (int i = 0; i < 5; i++) {
+        uint8_t brt = (bkp >> (8 + (i * 4))) & 0x0F;
+        if (brt < 1 || brt > 8) {
+            valid = 0;
+            break;
+        }
+    }
+
+    if (valid) {
+        for (int i = 0; i < 5; i++) {
+            GIMaxAttractBrightness[i] = (bkp >> (8 + (i * 4))) & 0x0F;
+        }
+    } else {
+        // Apply default values if the register is empty/corrupt
+        for (int i = 0; i < 5; i++) {
+            GIMaxAttractBrightness[i] = 8;
+        }
+        SaveGISettings();
+    }    
+}
+
 
 // Phase Delays in microseconds (Wait time before turning ON)
 // This is "phase-cut dimming" aka "leading-edge dimming"
@@ -483,16 +846,39 @@ uint8_t GITimelineCount = 0;
 uint8_t GICurrentEventIdx = 0;
 uint8_t GIActiveMask = 0; // Tracks which Triacs are currently ON during the cycle
 
-
-
+// Fading tracker: 0 = Attract Mode, 1000 = Game Mode
+static uint16_t GIFlipperFadeState = 0; 
+#define GI_FADE_SPEED 10
 
 // Returns the mask of Triacs that should turn on IMMEDIATELY at zero-cross
 uint8_t BuildGITimeline(void) {
     GITimelineCount = 0;
     uint8_t zc_mask = 0; 
-    
+
+    // 1. Advance the fade state towards 1000 (Game) or 0 (Attract)
+    if (ASICIsFlipperActive()) {
+        if (GIFlipperFadeState < 1000) {
+            GIFlipperFadeState += GI_FADE_SPEED;
+            if (GIFlipperFadeState > 1000) GIFlipperFadeState = 1000;
+        }
+    } else {
+        if (GIFlipperFadeState > 0) {
+            if (GIFlipperFadeState < GI_FADE_SPEED) GIFlipperFadeState = 0;
+            else GIFlipperFadeState -= GI_FADE_SPEED;
+        }
+    }
+
     for (int i = 0; i < 5; i++) {
         uint8_t b = GIBrightness[i];
+        int32_t attractMax = GIMaxAttractBrightness[i];
+        int32_t gameMax = GIMaxGameBrightness[i];
+
+        uint8_t currentMax = (uint8_t)(attractMax + ((gameMax - attractMax) * GIFlipperFadeState) / 1000);
+
+        if (b > currentMax) {
+            b = currentMax;
+        }
+
         if (b == 0) continue; // Always OFF
         
         if (b >= 8) {
@@ -502,6 +888,12 @@ uint8_t BuildGITimeline(void) {
         
         // Look up delay based on bulb type and brightness (1-7)
         uint16_t delay = GI_PhaseDelays[ACFrequency][GIBulbTypes[i]][b];
+        if (ACFrequency<2) {
+            delay = GI_PhaseDelays[ACFrequency][GIBulbTypes[i]][b];
+        } else {
+            zc_mask |= (1 << i); // 100% Brightness: Turn ON at zero-cross
+            continue;
+        }
         
         // Insert into the sorted timeline
         bool merged = false;
@@ -626,15 +1018,88 @@ void TIMER5_DAC_IRQHandler(void) {
 }
 
 
+void SetupDisplay() {
+    // Test Display RAM reads & writes
+    WriteDisplay(WPC_DMD_LOW_PAGE, 0);
+    WriteDisplay(WPC_DMD_HIGH_PAGE, 1);
+    WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
+
+    RPU_WPC_DisplayShowLogoScreen(0);
+    char buf[128];
+    snprintf(buf, 128, "Homepin MPU\n");
+    RPU_WPC_DisplayTextWithLogo(buf, 2);
+
+    HPDisplayBrightness = ReadDisplay(WPC_DMD_BRIGHTNESS); 
+    if (HPDisplayBrightness != 0xFF) {
+        
+        // Establish a unique baseline (this value cannot normally be set)
+        WriteDisplay(WPC_DMD_BRIGHTNESS, 69);
+
+        // Wait for that baseline to be accepted
+        bool baselineBrightnessAccepted = false;
+        bool testTookTooLong = false;
+        uint32_t timeout = TwoMHzTicksSinceStart();
+
+        while (!baselineBrightnessAccepted && !testTookTooLong) {
+            if (ReadDisplay(WPC_DMD_BRIGHTNESS)==69) baselineBrightnessAccepted = true;
+            if ((TwoMHzTicksSinceStart() - timeout) > (CPU_TICKS_PER_SECOND/10)) testTookTooLong = true;
+        }
+        
+        // Send the probe (Refresh Speed HPDisplayRefresh command = 0x80 / 128)
+        WriteDisplay(WPC_DMD_BRIGHTNESS, 0x80 + HPDisplayRefresh);
+        
+        bool refreshChangeAccepted = false;
+        testTookTooLong = false;
+        timeout = TwoMHzTicksSinceStart();
+        while (!refreshChangeAccepted && !testTookTooLong) {
+            uint8_t newReading = ReadDisplay(WPC_DMD_BRIGHTNESS);
+            if (newReading!=0xFF && newReading!=69) refreshChangeAccepted = true;
+            if ((TwoMHzTicksSinceStart() - timeout) > (CPU_TICKS_PER_SECOND/10)) testTookTooLong = true;
+        }
+
+        // Read it back until it changes
+        uint8_t actualValue = ReadDisplay(WPC_DMD_BRIGHTNESS);
+        
+        if (actualValue != 100) {
+            // It's the NEW board. It ignored the 0x80 brightness and kept our testBrt.
+            HPDisplayCanStoreRefresh = 1;
+        } else {
+            // It's the LEGACY board. It clamped 128 down to 100.
+            HPDisplayCanStoreRefresh = 0;
+        }
+        
+        // Put the brightness exactly back to where the user had it
+        WriteDisplay(WPC_DMD_BRIGHTNESS, HPDisplayBrightness);
+
+        // Wait until that value is accepted before we try to set the refresh speed
+        bool brightnessChangeAccepted = false;
+        testTookTooLong = false;
+        timeout = TwoMHzTicksSinceStart();
+        while (!brightnessChangeAccepted && !testTookTooLong) {
+            uint8_t newReading = ReadDisplay(WPC_DMD_BRIGHTNESS);
+            if (newReading==HPDisplayBrightness) brightnessChangeAccepted = true;
+            if ((TwoMHzTicksSinceStart() - timeout) > (CPU_TICKS_PER_SECOND/10)) testTookTooLong = true;
+        }
+
+        // Safely apply the refresh rate
+        SetDMDControllerRefreshSpeed(HPDisplayRefresh);
+        
+        // This is a Homepin display card, so we can run at a low rate 
+        // and ignore the stored preference (if any)
+        SetDisplayDMASpeed(EQ_SPEED_227, false);
+    }
+}
 
 
-int main(void) {
+ int main(void) {
     SwitchTo240MHz();
     // Right after reset, before doing anything else, read
     // some real-time clock values
     volatile uint32_t rtc_time_reg = RTC_TIME;
     volatile uint32_t rtc_date_reg = RTC_DATE;
     BackupDomainInit(); // set up persistant storage between runs
+    LoadGISettings();
+    LoadRefreshRates();
 
     // LED Setup
     RCU_AHB1EN |= (1U << 4);              
@@ -651,23 +1116,14 @@ int main(void) {
     MPUInit(); // RAM is cleared in this function
 //    InitTimer0PWM(); // Turn on E and Q clock signals
     Init_DMA_Quadrature_Clocks(); // Turn on E and Q clock signals
+    SetDisplayDMASpeed(CurrentDMASpeed, true);
     HPSDCardPortInit(); // Initialize the pins for the SD card
     RPU_WPC_SetupPorts();
-//    SetBlanking(true); // This is temporary -- should be done through MPU
-//    SetBlanking(false);
     EnableCycleCounter();
+    ACFrequency = DetectACFrequency();
 
     if (RPU_WPC_DisplayInit()) {
-        // Test Display RAM reads & writes
-        // Set low page to 0
-        WriteDisplay(WPC_DMD_LOW_PAGE, 0);
-        WriteDisplay(WPC_DMD_HIGH_PAGE, 1);
-        WriteDisplay(WPC_DMD_ACTIVE_PAGE, 0);
-
-        RPU_WPC_DisplayShowLogoScreen();
-        char buf[128];
-        snprintf(buf, 128, "Homepin MPU\n");
-        RPU_WPC_DisplayTextWithLogo(buf);
+        SetupDisplay();
     }
 
     bool ROMIntegrityFailed = false;
@@ -675,12 +1131,11 @@ int main(void) {
         // Report an error and stop here
         ROMIntegrityFailed = true;
     }
-    // The ROM is good -- we can get the name
-    // with this:
-    // GetROMName();
-
+    
     MPUInitROM(HPSDGetROMPointer(), HPSDGetROMSize());
-    MPUReset(true); 
+    MPUReset(true);
+
+    if (RTC_BKP5==0x00000000) SetRelativeVolumeAndBalance(25, 16, 25, 16, 25, 16, 0);
 
     rtc_time_reg = RTC_TIME;
     rtc_date_reg = RTC_DATE;
@@ -696,6 +1151,7 @@ int main(void) {
     bool pauseEmulationForMenu = false;
     bool romInitComplete = false;
     bool soundCardChecked = false;
+    bool volumesChecked = false;
     bool speedrunTransitionComplete = false;
 
     uint32_t lastTimeUpdate = 0;
@@ -733,18 +1189,33 @@ int main(void) {
             RTC_BKP2 = SecurityPICGetLearnedID();
         }
 
+        if (!soundCardChecked && (currentTickCount-startingTickCount)>CPU_TICKS_PER_SECOND) {
+            soundCardChecked = true;
+            if (!HPBasicWAVSoundCardPresent()) {
+                MPUUseLegacySoundCard(true);
+            }
+            if (HPAdvancedWAVSoundCardPresent()) {
+                // Request the volumes 
+                HPSoundCardRequestSynthVol();
+                HPSoundCardRequestDACVol();
+                HPSoundCardRequestCVSDVol();
+            }
+        }
+        if (!volumesChecked && (currentTickCount-startingTickCount)>(CPU_TICKS_PER_SECOND*2)) {
+            volumesChecked = true;
+            if (    HPSoundCardCurSynthVol(&StartingSynthVolL, &StartingSynthVolR) &&
+                    HPSoundCardCurDACVol(&StartingDACVolL, &StartingDACVolR) && 
+                    HPSoundCardCurCVSDVol(&StartingCVSDVolL, &StartingCVSDVolR) ) {
+                SetInitialVolumeAndBalance();
+            }
+        }
+
         if (ASICGetBlanking()) {
             // also, check to see if the operator wants to 
             // boot to the special menu 
             if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(true)) {
                 pauseEmulationForMenu = true;
                 RPU_WPC_MenuStart();
-            }
-            if (!soundCardChecked && (currentTickCount-startingTickCount)>CPU_TICKS_PER_SECOND) {
-                soundCardChecked = true;
-                if (!HPSoundCardPresent()) {
-                    MPUUseLegacySoundCard(true);
-                }
             }
         } else {
             if (!pauseEmulationForMenu && RPU_WPC_CheckForMenuRequest(false)) {
@@ -805,25 +1276,35 @@ int main(void) {
             pauseEmulationForMenu = RPU_WPC_Menu(currentTickCount);
 
             if (!pauseEmulationForMenu) {
+                SaveGISettings();
                 if (ROMIntegrityFailed) {
                     pauseEmulationForMenu = true;
-                    RPU_WPC_DisplayShowLogoScreen();
-                    RPU_WPC_DisplayTextWithLogo("ROM not found");
+                    RPU_WPC_DisplayShowLogoScreen(0);
+                    RPU_WPC_DisplayTextWithLogo("ROM not found", 2);
                 } else {
                     lastTickCount = currentTickCount;
-                    RPU_WPC_DisplayShowLogoScreen();
-                    RPU_WPC_DisplayTextWithLogo("Initializing\nROM...");
-                    if (RPU_WPC_MenuRequiresReset()) {
+                    RPU_WPC_DisplayShowLogoScreen(0);
+                    RPU_WPC_DisplayTextWithLogo("Initializing\nROM...", 2);
+                    bool ramChanged = RPU_WPC_RAMRequiresReset();
+                    bool romChanged = RPU_WPC_ROMRequiresReset();
+                    if (ramChanged || romChanged) {
+                        if (romChanged) {
+                            RTC_BKP2 = 0;
+                            SecurityPICSetLearnedID(0);
+                        }
                         MPUInitROM(HPSDGetROMPointer(), HPSDGetROMSize());
                         MPUReset(true);
                         romInitComplete = false;
                         lastTickCount = currentTickCount;
-//                        SetBlanking(true);
+                        speedrunTransitionComplete = false; // Fixes the boot sequence timing
+                        ROMIntegrityFailed = false;         // Clears any prior failed boot states
                     }
                 }
             } else {
                 if ((currentTickCount/CPU_TICKS_PER_SECOND)%2) SetBoardLEDOn();
                 else SetBoardLEDOff();
+                RPU_WPC_DisplayUpdate(FIRQTriggered(), currentTickCount);
+
             }
         }
 

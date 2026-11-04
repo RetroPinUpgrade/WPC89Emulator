@@ -1,412 +1,500 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include "RPU-WPC-Display.h"
 #include "mpu89.h"
 
+// Core Display Buffers mapped to 4 logical layers
+static uint8_t RPUWPC_PrimaryBuffer[4][512];
+static uint8_t RPUWPC_AlternateBuffer[4][512];
+static uint8_t RPUWPC_RenderBuffer[4][512];
+static uint8_t RPUWPC_WipeSourceBuffer[4][512];
+
+// Active drawing pointer
+static uint8_t (*ActiveDrawBuffer)[512] = RPUWPC_PrimaryBuffer;
+
+// State Flags
+static bool DisplayDirty = true;
+static bool PendingPageFlip = false;
+
+// Hardware RAM pages mapping to our 4 logical layers
+static uint8_t RPUWPC_FrontPage[4] = {8, 9, 10, 11};
+static uint8_t RPUWPC_BackPage[4]  = {12, 13, 14, 15};
+
+// Active Frame loops 0 through 5 to represent the 6 output frames
+static uint8_t RPUWPC_ActiveFrame = 0;
+
+// Animation State
+static bool WipeRunning = false;
+static uint32_t WipeStartTicks = 0;
+static uint32_t WipeDuration = 0;
+static int WipeDirection = 0;
+
+// Alternate Screen State
+static uint32_t AlternateFrequency = 0;
+static bool AlternateSolid = false;
+
 extern const unsigned char HPLogoFrame[512];
-extern const unsigned char RPUWPC_FONT_5x7[][5];
-static uint8_t RPUWPC_ScratchBuffer[512];
-uint8_t RPUWPC_ScratchBufferCopy[512];
-uint8_t RPUWPC_FrontBufferNum = 0;
-uint8_t RPUWPC_BackBufferNum = 1;
+extern const unsigned char RPUWPC_FONT_5x7[95][5];
 
-void RPU_WPC_DisplayClearScratchBuffer() {
-    for (int count=0; count<512; count++) RPUWPC_ScratchBuffer[count] = 0x00;
+void RPU_WPC_WriteDelay() {
+    DelayQuarterCycle(); DelayQuarterCycle(); DelayQuarterCycle(); DelayQuarterCycle();
+    DelayQuarterCycle(); DelayQuarterCycle(); DelayQuarterCycle(); DelayQuarterCycle();
 }
 
-#include <stdint.h>
-#include <string.h>
-
-extern uint8_t RPUWPC_ScratchBufferCopy[512];
-extern uint8_t RPUWPC_ScratchBuffer[512];
-
-/**
- * Shifts a specific row (16 bytes/128 pixels) from the Copy buffer to the main buffer.
- * LSb is left-most pixel.
- * shiftPixels > 0: Shift Right (towards MSb)
- * shiftPixels < 0: Shift Left (towards LSb)
- */
-void RPU_WPC_ShiftScratchRow(uint8_t rowNum, int shiftPixels) {
-    if (shiftPixels == 0 || rowNum >= 32) {
-        return;
-    }
-
-    uint8_t *src = &RPUWPC_ScratchBufferCopy[rowNum * 16];
-    uint8_t *dst = &RPUWPC_ScratchBuffer[rowNum * 16];
+bool RPU_WPC_DisplayInit() {
+    RPUWPC_FrontPage[0] = 8;  RPUWPC_FrontPage[1] = 9;  
+    RPUWPC_FrontPage[2] = 10; RPUWPC_FrontPage[3] = 11;
+    RPUWPC_BackPage[0]  = 12; RPUWPC_BackPage[1]  = 13; 
+    RPUWPC_BackPage[2]  = 14; RPUWPC_BackPage[3]  = 15;
+    RPUWPC_ActiveFrame = 0;
+    PendingPageFlip = false;
     
-    // Initialize destination row to 0
-    memset(dst, 0, 16);
+    memset(RPUWPC_PrimaryBuffer, 0, 2048);
+    memset(RPUWPC_AlternateBuffer, 0, 2048);
+    memset(RPUWPC_RenderBuffer, 0, 2048);
 
-    int absShift = (shiftPixels < 0) ? -shiftPixels : shiftPixels;
-    int byteOffset = absShift / 8;
-    int bitOffset = absShift % 8;
-
-    // Entire row shifted off-screen
-    if (byteOffset >= 16) {
-        return;
-    }
-
-    if (shiftPixels > 0) {
-        /* SHIFT RIGHT: Moving pixels towards the end of the row (Right side)
-           In LSb-first, this is bit-shifting towards the MSb (0 -> 7) */
-        for (int i = 0; i < 16 - byteOffset; i++) {
-            uint8_t val = src[i];
-            int targetIdx = i + byteOffset;
-
-            // Current byte shift
-            dst[targetIdx] |= (val << bitOffset);
-
-            // Carry to next byte
-            if (bitOffset > 0 && (targetIdx + 1) < 16) {
-                dst[targetIdx + 1] |= (val >> (8 - bitOffset));
-            }
+    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontPage[0]);
+    RPU_WPC_WriteDelay();
+    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[0]);
+    RPU_WPC_WriteDelay();
+    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontPage[0]);
+    RPU_WPC_WriteDelay();
+    
+    for (int frame = 0; frame < 4; frame++) {
+        WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[frame]);
+        RPU_WPC_WriteDelay();
+        for (int count = 0; count < 512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START + count, 0x00);
+            RPU_WPC_WriteDelay();
         }
-    } else {
-        /* SHIFT LEFT: Moving pixels towards the start of the row (Left side)
-           In LSb-first, this is bit-shifting towards the LSb (7 -> 0) */
-        for (int i = byteOffset; i < 16; i++) {
-            uint8_t val = src[i];
-            int targetIdx = i - byteOffset;
-
-            // Current byte shift
-            dst[targetIdx] |= (val >> bitOffset);
-
-            // Carry to previous byte
-            if (bitOffset > 0 && (targetIdx - 1) >= 0) {
-                dst[targetIdx - 1] |= (val << (8 - bitOffset));
-            }
+        WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontPage[frame]);
+        RPU_WPC_WriteDelay();
+        for (int count = 0; count < 512; count++) {
+            WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START + count, 0x00);
+            RPU_WPC_WriteDelay();
         }
     }
-}
-
-void RPU_WPC_DisplayUpdateCopyScratch() {
-    for (int count=0; count<512; count++) {
-        RPUWPC_ScratchBufferCopy[count] = RPUWPC_ScratchBuffer[count];        
-    }
-}
-
-
-
-
-/**
- * LUT containing 32 starting offsets (0-255).
- * Represents the delay before each row begins its shift.
- * Index 0 = Top Row, Index 31 = Bottom Row.
- */
-/*
-static const uint8_t WIPE_SINE_LUT[32] = {
-    0,   5,   12,  22,  34,  48,  64,  82, 
-    100, 118, 136, 154, 172, 188, 203, 216, 
-    227, 236, 243, 248, 251, 253, 254, 255,
-    255, 254, 253, 251, 248, 243, 236, 227 // Example sine-like curve
-};
-*/
-
-/**
- * Iteratively wipes the display.
- * @param speed Total ticks for full screen wipe (negative=left, positive=right)
- * @param elapsedTicks Ticks passed since the wipe began
- * @return true if wipe is active, false when complete
- */
-bool RPU_WPC_DisplayWipe(int speed, uint32_t elapsedTicks) {
-    if (speed == 0) return false;
-
-    uint32_t absSpeed = (uint32_t)(speed < 0 ? -speed : speed);
-    int direction = (speed < 0) ? -1 : 1;
-
-    if (elapsedTicks==0) {
-        // populate the backbuffer with full scratch copy
-        for (int count=0; count<512; count++) {
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBufferCopy[count]);
-        }    
-        return true;
-    }
-
-    // Check if the global timer has exceeded the requested duration
-    if (elapsedTicks >= absSpeed) {
-        // populate the backbuffer with full scratch copy
-        for (int count=0; count<512; count++) {
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
-        }    
-        return false;
-    }
-
-    for (uint8_t row = 0; row < 32; row++) {
-        uint32_t rowStartTick = (absSpeed/(32*4))*row;
-        for (uint8_t col=0; col<16; col++) {
-            // Calculate the new byte for WriteDisplay
-            uint8_t mixedByte = RPUWPC_ScratchBufferCopy[row*16 + col];
-            if (elapsedTicks>=rowStartTick) {
-                // this row has started moving, so we have to shift/mix
-                // Calculate progress: how far the row should have moved since its start
-                uint32_t moveDuration = absSpeed - rowStartTick;
-                uint32_t timeElapsedSinceStart = elapsedTicks - rowStartTick;
-                if (moveDuration == 0) moveDuration = 1; // Safety
     
-                // Linear interpolation to 128 pixels
-                int pixelsToShift = (int)((128 * (uint64_t)timeElapsedSinceStart) / moveDuration);
-                                
-                if (pixelsToShift > 128) {
-                    mixedByte = RPUWPC_ScratchBuffer[row*16 + col];
-                } else if (direction==1) {
-                    int byteOffset = pixelsToShift / 8;
-                    int bitOffset = pixelsToShift % 8;
+    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontPage[RPUWPC_ActiveFrame]);
+    RPU_WPC_WriteDelay();
+    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[0]);
+    RPU_WPC_WriteDelay();
+    
+    // Set FIRQ to trigger on scanline 31 for toggling buffers during vertical refresh
+    WriteDisplay(WPC_DMD_SCANLINE, 31);
+    RPU_WPC_WriteDelay();
+    
+    return true;
+}
 
-                    if ((byteOffset)>col) {
-                        mixedByte = RPUWPC_ScratchBuffer[row*16+col];
-                    } else if (byteOffset==col) {
-                        // This byte is a mix of the two buffers
-                        mixedByte = RPUWPC_ScratchBuffer[row*16+col] & (0xFF>>(8-(bitOffset)));
-                        mixedByte |= RPUWPC_ScratchBufferCopy[row*16] << (bitOffset);
-                    } else {
-                        mixedByte = RPUWPC_ScratchBufferCopy[row*16 + (col-1) - (byteOffset)]>>(8-(bitOffset));
-                        mixedByte |= RPUWPC_ScratchBufferCopy[row*16 + col - (byteOffset)]<<(bitOffset);
+void RPU_WPC_DisplaySetDrawTarget(uint8_t targetIdx) {
+    ActiveDrawBuffer = (targetIdx == 1) ? RPUWPC_AlternateBuffer : RPUWPC_PrimaryBuffer;
+}
+
+void RPU_WPC_DisplayClear() {
+    for (int i = 0; i < 4; i++) {
+        memset(ActiveDrawBuffer[i], 0x00, 512);
+    }
+}
+
+void RPU_WPC_DisplayCommit() {
+    DisplayDirty = true;
+}
+
+void RPU_WPC_DisplayStartWipe(int direction, uint32_t durationTicks, uint32_t currentTicks) {
+    for (int i = 0; i < 4; i++) {
+        memcpy(RPUWPC_WipeSourceBuffer[i], RPUWPC_RenderBuffer[i], 512);
+    }
+    
+    WipeRunning = true;
+    WipeDirection = direction;
+    WipeDuration = durationTicks;
+    WipeStartTicks = currentTicks;
+}
+
+void RPU_WPC_DisplaySetAlternateMode(uint32_t frequencyTicks, bool forceAlternate) {
+    AlternateFrequency = frequencyTicks;
+    AlternateSolid = forceAlternate;
+}
+
+static void ComputeWipe(uint32_t elapsedTicks) {
+    int direction = WipeDirection; 
+    uint32_t absSpeed = WipeDuration;
+    if (absSpeed == 0) absSpeed = 1;
+    
+    for (int frame = 0; frame < 4; frame++) {
+        if (direction == 1 || direction == -1) {
+            for (uint8_t row = 0; row < 32; row++) {
+                uint32_t rowStartTick = (absSpeed / (32 * 4)) * row;
+                for (uint8_t col = 0; col < 16; col++) {
+                    uint8_t mixedByte = RPUWPC_WipeSourceBuffer[frame][row * 16 + col];
+                    
+                    if (elapsedTicks >= rowStartTick) {
+                        uint32_t moveDuration = absSpeed - rowStartTick;
+                        if (moveDuration == 0) moveDuration = 1;
+                        int pixelsToShift = (int)((128 * (uint64_t)(elapsedTicks - rowStartTick)) / moveDuration);
+                        
+                        if (pixelsToShift > 128) {
+                            mixedByte = RPUWPC_PrimaryBuffer[frame][row * 16 + col];
+                        } else if (direction == 1) {
+                            int byteOffset = pixelsToShift / 8;
+                            int bitOffset = pixelsToShift % 8;
+                            if (byteOffset > col) {
+                                mixedByte = RPUWPC_PrimaryBuffer[frame][row * 16 + col];
+                            } else if (byteOffset == col) {
+                                mixedByte = RPUWPC_PrimaryBuffer[frame][row * 16 + col] & (0xFF >> (8 - bitOffset));
+                                mixedByte |= RPUWPC_WipeSourceBuffer[frame][row * 16] << bitOffset;
+                            } else {
+                                mixedByte = RPUWPC_WipeSourceBuffer[frame][row * 16 + (col - 1) - byteOffset] >> (8 - bitOffset);
+                                mixedByte |= RPUWPC_WipeSourceBuffer[frame][row * 16 + col - byteOffset] << bitOffset;
+                            }
+                        } else {
+                            int byteOffset = pixelsToShift / 8;
+                            int bitOffset = pixelsToShift % 8;
+                            if (col > (15 - byteOffset)) {
+                                mixedByte = RPUWPC_PrimaryBuffer[frame][row * 16 + col];
+                            } else if (col == (15 - byteOffset)) {
+                                mixedByte = RPUWPC_PrimaryBuffer[frame][row * 16 + col] & (0xFF << (8 - bitOffset));
+                                mixedByte |= RPUWPC_WipeSourceBuffer[frame][row * 16 + 15] >> bitOffset;
+                            } else {
+                                mixedByte = RPUWPC_WipeSourceBuffer[frame][row * 16 + col + byteOffset] >> bitOffset;
+                                mixedByte |= RPUWPC_WipeSourceBuffer[frame][row * 16 + col + byteOffset + 1] << (8 - bitOffset);
+                            }
+                        }
                     }
-                } else {
-                    int byteOffset = pixelsToShift / 8;
-                    int bitOffset = pixelsToShift % 8;
-                
-                    if (col > (15 - byteOffset)) {
-                        // Trailing edge: This part of the screen is now showing the background
-                        mixedByte = RPUWPC_ScratchBuffer[row * 16 + col];
-                    } else if (col == (15 - byteOffset)) {
-                        // Seam: The rightmost byte of the scrolling buffer meets the background
-                        mixedByte = RPUWPC_ScratchBuffer[row * 16 + col] & (0xFF << (8 - bitOffset));
-                        mixedByte |= RPUWPC_ScratchBufferCopy[row * 16 + 15] >> bitOffset;
-                    } else {
-                        // General case: Pulling from the copy buffer and shifting left
-                        mixedByte = RPUWPC_ScratchBufferCopy[row * 16 + col + byteOffset] >> bitOffset;
-                        mixedByte |= RPUWPC_ScratchBufferCopy[row * 16 + col + byteOffset + 1] << (8 - bitOffset);
-                    }
+                    RPUWPC_RenderBuffer[frame][row * 16 + col] = mixedByte;
                 }
             }
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+(row*16 + col), mixedByte);
+        } else if (direction == 2 || direction == -2) {
+            int dirSign = (direction == -2) ? -1 : 1; 
+            for (uint8_t row = 0; row < 32; row++) {
+                uint8_t *rowPtr;
+                int rowOffset = (elapsedTicks * 32) / absSpeed;
+                if (dirSign == -1) {
+                    if (row > (31 - rowOffset)) rowPtr = &RPUWPC_PrimaryBuffer[frame][row * 16];
+                    else rowPtr = &RPUWPC_WipeSourceBuffer[frame][(row + rowOffset) * 16];
+                } else {
+                    if (row < rowOffset) rowPtr = &RPUWPC_PrimaryBuffer[frame][row * 16];
+                    else rowPtr = &RPUWPC_WipeSourceBuffer[frame][(row - rowOffset) * 16];
+                }
+                for (int col = 0; col < 16; col++) {
+                    RPUWPC_RenderBuffer[frame][row * 16 + col] = rowPtr[col];
+                }
+            }
         }
     }
-
-    return true;
 }
 
 
-bool RPU_WPC_DisplayWipeUD(int speed, uint32_t elapsedTicks) {
-    if (speed == 0) return false;
+void RPU_WPC_DisplayUpdateImmediate(void) {
+    // Write the current active draw buffer directly to the front (visible) pages
+    for (int frame = 0; frame < 4; frame++) {
+        WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_FrontPage[frame]);
+        RPU_WPC_WriteDelay();
+        
+        for (int count = 0; count < 512; count++) {
+            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START + count, ActiveDrawBuffer[frame][count]);
+            RPU_WPC_WriteDelay();
+        }
+    }
+    
+    // Return multiplexer to a stable state for legacy routines
+    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[0]);
+    RPU_WPC_WriteDelay();
+    
+    // Clear the dirty flag since we just manually flushed to hardware
+    DisplayDirty = false; 
+}
 
-    uint32_t absSpeed = (uint32_t)(speed < 0 ? -speed : speed);
-    int direction = (speed < 0) ? -1 : 1;
 
-    if (elapsedTicks==0) {
-        // populate the backbuffer with full scratch copy
-        for (int count=0; count<512; count++) {
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBufferCopy[count]);
-        }    
-        return true;
+void RPU_WPC_DisplayUpdate(bool firqStatus, uint32_t currentTicks) {
+    if (!firqStatus) return;
+
+    // 1. VBLANK CRITICAL SECTION (Scanline 31)
+    if (PendingPageFlip) {
+        for (int i = 0; i < 4; i++) {
+            uint8_t temp = RPUWPC_FrontPage[i];
+            RPUWPC_FrontPage[i] = RPUWPC_BackPage[i];
+            RPUWPC_BackPage[i] = temp;
+        }
+        
+        WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontPage[0]);
+        RPU_WPC_WriteDelay();
+        
+        PendingPageFlip = false;
     }
 
-    // Check if the global timer has exceeded the requested duration
-    if (elapsedTicks >= absSpeed) {
-        // populate the backbuffer with full scratch copy
-        for (int count=0; count<512; count++) {
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
-        }    
-        return false;
+    // Immediately apply the active frame to the hardware
+    RPUWPC_ActiveFrame++;
+    if (RPUWPC_ActiveFrame >= 6) {
+        RPUWPC_ActiveFrame = 0;
     }
+    
+    // Sequence mappings to pulse-width modulate 5 levels into 4 memory buffers across 6 hardware frames 
+    static const uint8_t FrameToBuffer[6] = {0, 1, 2, 3, 2, 1}; 
+    
+    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontPage[FrameToBuffer[RPUWPC_ActiveFrame]]);
+    RPU_WPC_WriteDelay();
+    WriteDisplay(WPC_DMD_SCANLINE, 31); // Re-arm the FIRQ trigger
+    RPU_WPC_WriteDelay();
 
-    for (uint8_t row = 0; row < 32; row++) {
-        uint8_t *rowPtr;
-        int rowOffset = (elapsedTicks*32) / absSpeed;
-        if (direction==-1) {
-            if (row>(31-rowOffset)) rowPtr = &RPUWPC_ScratchBuffer[row*16];
-            else rowPtr = &RPUWPC_ScratchBufferCopy[(row+rowOffset)*16];
+    // 2. BACKGROUND RENDERING
+    bool needHardwareUpdate = false;
+    uint8_t (*targetRender)[512] = RPUWPC_PrimaryBuffer;
+
+    if (WipeRunning) {
+        uint32_t elapsed = currentTicks - WipeStartTicks;
+        if (elapsed >= WipeDuration) {
+            WipeRunning = false;
+            targetRender = RPUWPC_PrimaryBuffer;
+            for (int i = 0; i < 4; i++) {
+                memcpy(RPUWPC_RenderBuffer[i], RPUWPC_PrimaryBuffer[i], 512);
+            }
+            needHardwareUpdate = true;
         } else {
-            if (row<rowOffset) rowPtr = &RPUWPC_ScratchBuffer[row*16];
-            else rowPtr = &RPUWPC_ScratchBufferCopy[(row-rowOffset)*16];
+            ComputeWipe(elapsed);
+            targetRender = RPUWPC_RenderBuffer;
+            needHardwareUpdate = true;
         }
-        for (int col=0; col<16; col++) {
-            WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+col + row*16, rowPtr[col]);
+    } else if (AlternateSolid) {
+        targetRender = RPUWPC_AlternateBuffer;
+        if (DisplayDirty) {
+            for (int i = 0; i < 4; i++) {
+                memcpy(RPUWPC_RenderBuffer[i], RPUWPC_AlternateBuffer[i], 512);
+            }
+            needHardwareUpdate = true;
         }
-    }
-    return true;
-}
-
-
-void RPU_WPC_DisplayUpdateBackBuffer() {
-    // push the scratch buffer to the back buffer
-    for (int count=0; count<512; count++) {
-        WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
-    }    
-}
-
-void RPU_WPC_DisplayFlipBackToFront() {
-    uint8_t tempBuffer = RPUWPC_FrontBufferNum;
-    RPUWPC_FrontBufferNum = RPUWPC_BackBufferNum;
-    RPUWPC_BackBufferNum = tempBuffer;
-
-    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontBufferNum);
-    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackBufferNum);
-    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontBufferNum);
-}
-
-
-bool RPU_WPC_DisplayInit(){
-    RPUWPC_FrontBufferNum = 14;
-    RPUWPC_BackBufferNum = 15;
-    WriteDisplay(WPC_DMD_LOW_PAGE, RPUWPC_FrontBufferNum);
-    WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackBufferNum);
-    WriteDisplay(WPC_DMD_ACTIVE_PAGE, RPUWPC_FrontBufferNum);
-    for (int count=0; count<512; count++) {
-        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, 0x00);
-        WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, 0x00);
-    }
-
-    WriteDisplay(WPC_DMD_SCANLINE, 0x40);
-    return true;
-}
-
-bool RPU_WPC_DisplayShowLogoScreen(int pageNum) {
-    for (int count=0; count<512; count++) {
-        if (pageNum==0) WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, HPLogoFrame[count]);
-        else if (pageNum==1) WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START+count, HPLogoFrame[count]);
-        for (int nopCount=0; nopCount<100; nopCount++) {
-            __NOP();
+    } else if (AlternateFrequency > 0) {
+        bool showAlt = ((currentTicks / AlternateFrequency) % 2) == 0;
+        targetRender = showAlt ? RPUWPC_AlternateBuffer : RPUWPC_PrimaryBuffer;
+        
+        static bool lastShowAlt = false;
+        if (showAlt != lastShowAlt || DisplayDirty) {
+            lastShowAlt = showAlt;
+            for (int i = 0; i < 4; i++) {
+                memcpy(RPUWPC_RenderBuffer[i], targetRender[i], 512);
+            }
+            needHardwareUpdate = true;
+        }
+    } else {
+        targetRender = RPUWPC_PrimaryBuffer;
+        if (DisplayDirty) {
+            for (int i = 0; i < 4; i++) {
+                memcpy(RPUWPC_RenderBuffer[i], RPUWPC_PrimaryBuffer[i], 512);
+            }
+            needHardwareUpdate = true;
         }
     }
-    return true;
+
+    if (needHardwareUpdate) {
+        // Bulk write to the BACK pages
+        for (int frame = 0; frame < 4; frame++) {
+            WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[frame]);
+            RPU_WPC_WriteDelay();
+            for (int count = 0; count < 512; count++) {
+                WriteDisplay(DISPLAY_RAM_UPPER_PAGE_START + count, targetRender[frame][count]);
+                RPU_WPC_WriteDelay();
+            }
+        }
+        
+        // Return the HIGH_PAGE multiplexer to a stable default 
+        WriteDisplay(WPC_DMD_HIGH_PAGE, RPUWPC_BackPage[0]);
+        RPU_WPC_WriteDelay();
+        
+        // Queue the flip for the NEXT vertical blanking interval.
+        PendingPageFlip = true;
+        DisplayDirty = false;
+    }
 }
 
-/**
- * @brief Draws a single pixel in the 128x32 buffer.
- * @note LSB-first packing: First pixel of the byte is the left-most.
- */
-static inline void DrawPixelToScratch(uint8_t *buffer, int x, int y) {
+static inline void DrawPixelToBuffer(uint8_t buffer[4][512], int x, int y, uint8_t color) {
     if (x < 0 || x >= 128 || y < 0 || y >= 32) return;
-    // (y * 16) gets us to the row (128 pixels / 8 bits = 16 bytes per row)
-    // (x >> 3) gets us to the correct byte in that row
-    // (x & 7) gets us the bit index (0-7), where 0 is the LSB
-    buffer[(y * 16) + (x >> 3)] |= (1 << (x & 7));
+    int idx = (y * 16) + (x >> 3);
+    uint8_t bit = 1 << (x & 7);
+    
+    // Clean slate across all layers
+    buffer[0][idx] &= ~bit;
+    buffer[1][idx] &= ~bit;
+    buffer[2][idx] &= ~bit;
+    buffer[3][idx] &= ~bit;
+    
+    // Map values (0-4) onto the overlapping buffers 
+    if (color == 1) {
+        buffer[0][idx] |= bit;
+    } else if (color == 2) {
+        buffer[0][idx] |= bit;
+        buffer[3][idx] |= bit;
+    } else if (color == 3) {
+        buffer[0][idx] |= bit;
+        buffer[2][idx] |= bit;
+    } else if (color == 4) {
+        buffer[0][idx] |= bit;
+        buffer[1][idx] |= bit;
+        buffer[2][idx] |= bit;
+        buffer[3][idx] |= bit;
+    }
 }
 
 void RPU_WPC_DisplayDrawPixel(uint8_t x, uint8_t y, uint8_t color) {
-    if (x < 0 || x >= 128 || y < 0 || y >= 32) return;
-    // (y * 16) gets us to the row (128 pixels / 8 bits = 16 bytes per row)
-    // (x >> 3) gets us to the correct byte in that row
-    // (x & 7) gets us the bit index (0-7), where 0 is the LSB
-    if (color) RPUWPC_ScratchBuffer[(y * 16) + (x >> 3)] |= (1 << (x & 7));
-    else RPUWPC_ScratchBuffer[(y * 16) + (x >> 3)] &= ~(1 << (x & 7));
+    DrawPixelToBuffer(ActiveDrawBuffer, x, y, color);
 }
 
+void RPU_WPC_DrawHorizontalLine(int x1, int x2, int y, uint8_t color) {
+    if (x1 > 127 || x2 > 127 || y > 31 || x1 < 0 || x2 < 0 || y < 0) return;
+    for (int count = x1; count < x2; count++) {
+        RPU_WPC_DisplayDrawPixel(count, y, color);
+    }
+}
 
-/**
- * @brief Prints a wrapped and clipped string into a 512-byte display buffer.
- * * @param buffer  Pointer to 512-byte display buffer
- * @param x1, y1  Upper-left of the bounding (clipping) box
- * @param x2, y2  Lower-right of the bounding (clipping) box
- * @param x, y    Start position of the first character
- * @param msg     Null-terminated string to print
- */
-void DrawTextWrapped(uint8_t *buffer, int x1, int y1, int x2, int y2, int x, int y, const char *msg) {
+void RPU_WPC_DrawRectangle(int offset, bool filled, uint8_t color) {
+    if (offset > 15) return;
+    if (!filled) {   
+        for (int count = offset; count < (512 - offset * 2); count++) {
+            RPU_WPC_DisplayDrawPixel(count, offset, color);
+            RPU_WPC_DisplayDrawPixel(count, 31 - offset, color);
+            if (count < (32 - offset * 2)) {
+                RPU_WPC_DisplayDrawPixel(offset, count, color);
+                RPU_WPC_DisplayDrawPixel(127 - offset, count, color);
+            }
+        }
+    } else {
+        for (int count = offset; count < (512 - offset * 2); count++) {
+            for (int row = offset; row < (32 - offset); row++) {
+                RPU_WPC_DisplayDrawPixel(count, row, color);
+            }
+        }
+    }
+}
+
+void RPU_WPC_DrawRectangleDotted(int offset, bool filled, uint8_t color) {
+    if (offset > 15) return;
+    if (!filled) {   
+        for (int count = offset; count < (512 - offset * 2); count++) {
+            if (((count + offset) % 2) == 0) RPU_WPC_DisplayDrawPixel(count, offset, color);
+            if (((count + 31 - offset) % 2) == 0) RPU_WPC_DisplayDrawPixel(count, 31 - offset, color);
+            if (count < (32 - offset * 2)) {
+                if (((count + offset) % 2) == 0) RPU_WPC_DisplayDrawPixel(offset, count, color);
+                if (((count + 127 - offset) % 2) == 0) RPU_WPC_DisplayDrawPixel(127 - offset, count, color);
+            }
+        }
+    } else {
+        for (int count = offset; count < (512 - offset * 2); count++) {
+            for (int row = offset; row < (32 - offset); row++) {
+                RPU_WPC_DisplayDrawPixel(count, row, color);
+            }
+        }
+    }
+}
+
+void RPU_WPC_DrawRectangleXY(int x, int y, int width, int height, bool filled, uint8_t color) {
+    for (int col = x; col < (x + width); col++) {
+        for (int row = y; row < (y + height); row++) {
+            if (filled) {
+                RPU_WPC_DisplayDrawPixel(col, row, color);
+            } else {
+                if (row == y || row == (y + height - 1) || col == x || col == (x + width - 1)) {
+                    RPU_WPC_DisplayDrawPixel(col, row, color);
+                }
+            }
+        }
+    }
+}
+
+static void DrawTextWrappedToBuffer(uint8_t buffer[4][512], int x1, int y1, int x2, int y2, int x, int y, const char *msg, uint8_t color) {
     int curX = x;
     int curY = y;
 
     while (*msg != '\0') {
         char c = *msg++;
-
-        // 1. Handle Carriage Return (\r)
-        if (c == '\r') {
-            curX = x1;
-            continue;
-        }
-
-        // 2. Handle Newline (\n)
-        if (c == '\n') {
-            curX = x1;
-            curY += 8;
-            continue;
-        }
-
-        // 3. Handle Automatic Wrapping
-        if (curX + 5 > x2) {
-            curX = x1;
-            curY += 8;
-        }
-
-        // 4. Global Y-Clipping
+        if (c == '\r') { curX = x1; continue; }
+        if (c == '\n') { curX = x1; curY += 8; continue; }
+        if (curX + 5 > x2) { curX = x1; curY += 8; }
         if (curY + 7 > y2) break;
 
-        // 5. Bounds Check: Ensure character is in the 0x20-0x7E range
         if (c >= 0x20 && c <= 0x7E) {
             uint8_t fontIdx = c - 0x20;
-            
             for (int col = 0; col < 5; col++) {
                 uint8_t columnData = RPUWPC_FONT_5x7[fontIdx][col];
                 for (int row = 0; row < 7; row++) {
                     if (columnData & (1 << row)) {
                         int px = curX + col;
                         int py = curY + row;
-                        // Local Bounding Box Clipping
                         if (px >= x1 && px <= x2 && py >= y1 && py <= y2) {
-                            DrawPixelToScratch(buffer, px, py);
+                            DrawPixelToBuffer(buffer, px, py, color);
                         }
                     }
                 }
             }
-            curX += 6; // Space for character + 1px gutter
+            curX += 6;
         }
     }
 }
 
-/**
- * @brief Clears a rectangular area in the 512-byte display buffer.
- * @param buffer Pointer to the 512-byte buffer.
- * @param x1, y1 Upper-left coordinates of the area to clear.
- * @param x2, y2 Lower-right coordinates of the area to clear.
- */
-void ClearBufferArea(uint8_t *buffer, int x1, int y1, int x2, int y2) {
-    // Bounds checking to prevent buffer overflow
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 >= 128) x2 = 127;
-    if (y2 >= 32) y2 = 31;
+void RPU_WPC_DrawTextToScratch(const char *message, uint8_t color) {
+    DrawTextWrappedToBuffer(ActiveDrawBuffer, 3, 0, 127, 31, 3, 3, message, color);
+}
 
-    for (int y = y1; y <= y2; y++) {
-        for (int x = x1; x <= x2; x++) {
-            // (y * 16) finds the row start
-            // (x >> 3) finds the byte
-            // ~(1 << (x & 7)) creates a mask with a 0 at the target bit
-            buffer[(y * 16) + (x >> 3)] &= ~(1 << (x & 7));
+void RPU_WPC_DrawTextToScratchXY(const char *message, int xCorner, int yCorner, uint8_t color) {
+    DrawTextWrappedToBuffer(ActiveDrawBuffer, xCorner, yCorner, 127, 31, xCorner, yCorner, message, color);
+}
+
+void RPU_WPC_DisplayDrawArrow(int x, int y, int direction, uint8_t color) {
+    int dx = 0, dy = 0, perpX = 0, perpY = 0;
+    switch (direction) {
+        case 0: dy = 1;  perpX = 1; break;
+        case 1: dx = -1; perpY = 1; break;
+        case 2: dy = -1; perpX = 1; break;
+        case 3: dx = 1;  perpY = 1; break;
+        default: return;
+    }
+    for (int step = 0; step < 3; step++) {
+        int width = (step * 2) + 1; 
+        int curX = x + (dx * step);
+        int curY = y + (dy * step);
+        int halfWidth = width / 2;
+        for (int w = -halfWidth; w <= halfWidth; w++) {
+            RPU_WPC_DisplayDrawPixel(curX + (perpX * w), curY + (perpY * w), color);
         }
     }
-}
-
-
-void RPU_WPC_DrawTextToScratch(const char *message) {
-    DrawTextWrapped(RPUWPC_ScratchBuffer, 3, 0, 127, 31, 3, 3, message);
-}
-
-void RPU_WPC_DrawTextToScratchXY(const char *message, int xCorner, int yCorner) {
-    DrawTextWrapped(RPUWPC_ScratchBuffer, xCorner, yCorner, 127, 31, xCorner, yCorner, message);
-}
-
-
-void RPU_WPC_DisplayTextWithLogo(const char *message) {
-    for (int count=0; count<512; count++) {
-        RPUWPC_ScratchBuffer[count] = HPLogoFrame[count];
+    for (int step = 3; step < 6; step++) {
+        RPU_WPC_DisplayDrawPixel(x + (dx * step), y + (dy * step), color);
     }
-    DrawTextWrapped(RPUWPC_ScratchBuffer, 40, 3, 126, 29, 40, 3, message);
-    for (int count=0; count<512; count++) {
-        WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START+count, RPUWPC_ScratchBuffer[count]);
-    }
-
 }
 
+void RPU_WPC_DisplayTextWithLogo(const char *message, uint8_t color) {
+    RPU_WPC_DisplaySetDrawTarget(0); 
+    
+    for (int frame = 0; frame < 4; frame++) {
+        memcpy(RPUWPC_PrimaryBuffer[frame], HPLogoFrame, 512);
+    }
+    
+    DrawTextWrappedToBuffer(RPUWPC_PrimaryBuffer, 40, 3, 126, 29, 40, 3, message, color);
+    
+    RPU_WPC_DisplaySetAlternateMode(0, false);
+    RPU_WPC_DisplayUpdateImmediate();
+}
+
+bool RPU_WPC_DisplayShowLogoScreen(int pageNum) {
+    RPU_WPC_DisplaySetDrawTarget(0);
+    
+    for (int frame = 0; frame < 4; frame++) {
+        memcpy(RPUWPC_PrimaryBuffer[frame], HPLogoFrame, 512);
+    }
+    
+    RPU_WPC_DisplaySetAlternateMode(0, false);
+    RPU_WPC_DisplayUpdateImmediate();
+    
+    return true;
+}
 
 uint32_t RPUWPCDisplayLogoBaseTickCount = 0;
 void RPU_WPC_DisplayShowLogo(int pageNum, uint32_t tickCount) {
-    if (RPUWPCDisplayLogoBaseTickCount==0 || (tickCount-20000000)>RPUWPCDisplayLogoBaseTickCount) {
+    if (RPUWPCDisplayLogoBaseTickCount == 0 || (tickCount - 20000000) > RPUWPCDisplayLogoBaseTickCount) {
         RPUWPCDisplayLogoBaseTickCount = tickCount;
         RPU_WPC_DisplayShowLogoScreen(pageNum);
     }
 }
-
 
 const unsigned char HPLogoFrame[512] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
@@ -441,13 +529,11 @@ const unsigned char HPLogoFrame[512] = {
     0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 
     0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    };
-
+};
 
 // Font data: 5 bytes per character. 
 // Format: Column-major, 1 byte = 1 vertical column (LSB = top pixel)
 // Full 5x7 Font Array (ASCII 0x20 - 0x7E)
-// Format: Column-major, 1 byte = 1 vertical column (LSB = top pixel)
 const unsigned char RPUWPC_FONT_5x7[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // 0x20 (Space)
     {0x00, 0x00, 0x5F, 0x00, 0x00}, // !
@@ -509,7 +595,7 @@ const unsigned char RPUWPC_FONT_5x7[95][5] = {
     {0x07, 0x08, 0x70, 0x08, 0x07}, // Y
     {0x61, 0x51, 0x49, 0x45, 0x43}, // Z
     {0x00, 0x7F, 0x41, 0x41, 0x00}, // [
-    {0x02, 0x04, 0x08, 0x10, 0x20}, // \ (Backslash)
+    {0x02, 0x04, 0x08, 0x10, 0x20}, // \ // Backslash
     {0x00, 0x41, 0x41, 0x7F, 0x00}, // ]
     {0x04, 0x02, 0x01, 0x02, 0x04}, // ^
     {0x40, 0x40, 0x40, 0x40, 0x40}, // _
@@ -543,5 +629,5 @@ const unsigned char RPUWPC_FONT_5x7[95][5] = {
     {0x00, 0x08, 0x36, 0x41, 0x00}, // {
     {0x00, 0x00, 0x7F, 0x00, 0x00}, // |
     {0x00, 0x41, 0x36, 0x08, 0x00}, // }
-    {0x08, 0x04, 0x08, 0x10, 0x08}  // ~ (Tilde)
+    {0x08, 0x04, 0x08, 0x10, 0x08}  // ~
 };

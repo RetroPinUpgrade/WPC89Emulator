@@ -116,7 +116,9 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 
     /* The GD32 driver expects a byte address and divides by 512 internally */
 //    uint32_t addr = sector * 512;
-    uint32_t addr = sector;
+// this works for big cards (>4GB)
+//    uint32_t addr = sector;
+    uint32_t addr = (sd_cardinfo.card_type == SDIO_HIGH_CAPACITY_SD_CARD) ? sector : (sector * 512);
 
     if (count == 1) {
         res = sd_block_read((uint32_t*)buff, addr, 512);
@@ -135,7 +137,10 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     if (!is_sd_card_inserted()) return RES_NOTRDY;
 
     /* The GD32 driver expects a byte address and divides by 512 internally */
-    uint32_t addr = sector * 512;
+//    uint32_t addr = sector * 512;
+// this works for big cards (>4GB)
+//    uint32_t addr = sector;
+    uint32_t addr = (sd_cardinfo.card_type == SDIO_HIGH_CAPACITY_SD_CARD) ? sector : (sector * 512);
 
     if (count == 1) {
         res = sd_block_write((uint32_t*)buff, addr, 512);

@@ -39,8 +39,7 @@ uint32_t UpperAddressMask = 0x00000000;
 #ifndef MPU89_BUILD_FOR_COMPUTER
 #include "gd32f4xx.h"
 
-#define USE_HP_SERIAL_SOUND_CARD    0
-
+#define USE_HP_SERIAL_SOUND_CARD    1
 
 void MCUPortInit() {
     rcu_periph_clock_enable(RCU_GPIOA);
@@ -294,7 +293,7 @@ void MPUInitROM(uint8_t *romLocation, uint32_t romSize) {
   UpperAddressMask = (romSize-1) & 0xF0000;
   ASICInit();
   ASICSetROMSize(romSize);
-  SetBlanking(false); // This is temporary -- should be done through MPU
+  //SetBlanking(false); // This is temporary -- should be done through MPU
   FixedROMBase = ROM + UpperAddressMask;
 }
 
@@ -521,8 +520,8 @@ __attribute__((always_inline)) static inline uint8_t ReadLegacySoundCard(uint16_
 }
 
 
-
-__attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
+/*
+__attribute__((always_inline)) inline void WriteDisplayGood(uint16_t address, uint8_t data) {
   __disable_irq();
   SetAddressBus(address);
   SetDataBus(data);
@@ -559,7 +558,123 @@ __attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_
   __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
   __enable_irq();
 }
+*/
 
+uint8_t GetDisplayDMASpeed(void);
+
+__attribute__((always_inline)) inline void WriteDisplay(uint16_t address, uint8_t data) {
+  uint8_t speed = GetDisplayDMASpeed();
+
+  __disable_irq();
+  SetAddressBus(address);
+  SetDataBus(data);
+  SetRWLow();  // RW Low
+  SetIOENHigh();
+  SetDataBusDirection(true);
+  SetIOENLow(); // falling edge of E, we put up address, RW
+
+  // Branch BEFORE the sync loop to guarantee zero injected jitter
+  if (speed == 3) {
+      // --- 2.50 MHz (Baseline) ---
+      if (ReadNotESignal()) { while (ReadNotESignal()); }
+      while (!ReadNotESignal()); 
+      
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 16 NOPs
+      SetIOLow();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 64 NOPs
+      SetIOHigh();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 24 NOPs
+
+  } else if (speed == 2) {
+      // --- 2.27 MHz (~8.3% slower) ---
+      if (ReadNotESignal()) { while (ReadNotESignal()); }
+      while (!ReadNotESignal()); 
+      
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); // 17 NOPs
+      SetIOLow();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 69 NOPs
+      SetIOHigh();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); // 26 NOPs
+
+  } else if (speed == 1) {
+      // --- 2.17 MHz (~16.6% slower) ---
+      if (ReadNotESignal()) { while (ReadNotESignal()); }
+      while (!ReadNotESignal()); 
+      
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); // 19 NOPs
+      SetIOLow();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); // 75 NOPs
+      SetIOHigh();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); // 28 NOPs
+
+  } else {
+      // --- 2.00 MHz (25% slower) ---
+      if (ReadNotESignal()) { while (ReadNotESignal()); }
+      while (!ReadNotESignal()); 
+      
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); // 20 NOPs
+      SetIOLow();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 80 NOPs
+      SetIOHigh();  
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+      __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); // 30 NOPs
+  }
+  
+  SetIOENHigh();
+  SetRWHigh();    // RW High (Return to Read/Idle)
+  __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+  __enable_irq();
+}
 
 
 
@@ -887,4 +1002,25 @@ bool MPUDisplayHighPageOverride() {
 
 bool MPUBootSequenceFinished() {
   return BootSequenceFinished;
+}
+
+
+void MPURestoreDisplayState(void) {
+  // 1. Restore the full 8KB Display RAM from the shadow buffer
+  for (uint8_t page = 0; page < 16; page++) {
+      // Page it into the lower hardware window
+      WriteDisplay(WPC_DMD_LOW_PAGE, page);
+
+      // Dump the 512 bytes for this page into the hardware
+      uint16_t ramOffset = page * 512;
+      for (uint16_t i = 0; i < 512; i++) {
+          WriteDisplay(DISPLAY_RAM_LOWER_PAGE_START + i, DisplayRAM[ramOffset + i]);
+      }
+  }
+
+  // 2. Restore the page registers and triggers to match the ROM's expected state
+  WriteDisplay(WPC_DMD_LOW_PAGE, DisplayLowPage);
+  WriteDisplay(WPC_DMD_HIGH_PAGE, DisplayHighPage);
+  WriteDisplay(WPC_DMD_ACTIVE_PAGE, DisplayNextActivePage);
+  WriteDisplay(WPC_DMD_SCANLINE, DisplayScanlineTrigger);
 }

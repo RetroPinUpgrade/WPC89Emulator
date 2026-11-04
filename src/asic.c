@@ -36,6 +36,7 @@ bool ASICMidnightModeEnabled;
 bool ASICBlankSignalHigh;
 int ASICWatchdogTicks;
 int ASICWatchdogExpiredCounter;
+uint32_t ASICTotalticks = 0;
 uint8_t ASICDipSwitchSetting;
 uint8_t ASICCabinetSwitches;
 uint8_t *ASICDateTimeBase;
@@ -50,6 +51,13 @@ uint8_t ASICMinute;
 uint8_t ASICDateChecksum1;
 uint8_t ASICDateChecksum2;
 bool ASICDateTimeHasChanged;
+
+#define ASIC_WPC_ESCAPE_BUTTON      0x10
+#define ASIC_WPC_ENTER_BUTTON       0x80
+
+volatile int32_t ASICFlipperActiveTimer = 0;
+bool ASICFlipperStateOverrideOn = false;
+bool ASICFlipperStateOverrideValue = false;
 
 // 5-element array for GI channels D0-D4 (values 0-7)
 volatile uint8_t GIBrightness[5] = {5, 5, 5, 5, 5};
@@ -170,6 +178,7 @@ void ASICRelease() {
 }
 
 void ASICReset(bool turnOnBlanking) {
+    for (int count=0; count<ASIC_RAM_SIZE; count++) ASICRam[count] = 0x00;
     ASICPeriodicIRQTimerEnabled = false;
     ASICRomBank = 0;
     ASICBankedROMOffset = 0;
@@ -182,6 +191,8 @@ void ASICReset(bool turnOnBlanking) {
     ASICMemoryProtectionMask = 0;
     SecurityPICReset();
     ASICRequiresReboot = false;
+    ASICFlipperActiveTimer = 0;
+    ASICTotalticks = 0;
 
 #ifdef MPU89_BUILD_FOR_COMPUTER  
     ASICMidnightMadnessMode = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -258,6 +269,15 @@ uint8_t ASICGetDipSwitchByte() {
 }
 
 void ASICExecuteCycle(int ticksExecuted) {
+    ASICTotalticks += ticksExecuted;
+
+    if (ASICFlipperActiveTimer > 0) {
+        ASICFlipperActiveTimer -= ticksExecuted;
+        if (ASICFlipperActiveTimer < 0) {
+            ASICFlipperActiveTimer = 0;
+        }
+    }
+
     ASICTicksZeroCross += ticksExecuted;
     if (ASICUseSoftwareZC) {
         if (ASICTicksZeroCross >= CALL_ZEROCLEAR_AFTER_TICKS) {
@@ -362,6 +382,10 @@ void ASICWrite(uint16_t offset, uint8_t value) {
 
         case WPC95_FLIPPER_SWITCH_INPUT:
         case WPC_FLIPTRONICS_FLIPPER_PORT_A:
+            if (value != 0xFF) {
+                // 60,000,000 ticks at 2MHz equals 30 seconds
+                ASICFlipperActiveTimer = 60000000; 
+            }        
             WriteFliptronic(value);
             break;
 
@@ -406,6 +430,11 @@ void ASICWrite(uint16_t offset, uint8_t value) {
                 } 
             }
 
+            if (value & 0x80) {
+                // 10,000,000 ticks at 2MHz equals 5 seconds
+                ASICFlipperActiveTimer = 10000000; 
+            }
+
             LastTriacValue = value;
             if (ASICUseSoftwareZC || ASICGIDimmingAlgo==ASIC_GI_DIMMING_ORIGINAL) {
                 SetDataBus(value);
@@ -413,7 +442,7 @@ void ASICWrite(uint16_t offset, uint8_t value) {
                 StrobeTriac();
                 DelayQuarterCycle();
                 SetDRLine(true);
-            }            
+            }
             break;
         } 
 
@@ -558,6 +587,70 @@ uint8_t ASICReadSwitchRow() {
 }
 
 
+
+// Move state variables out of the function so they can be externally reset
+static bool filterEscapeIsHeld = false;
+static bool filterComboTriggered = false;
+static uint32_t filterEscapePulseStart = 0;
+static bool filterPulseActive = false;
+
+void ASICResetCabinetFilter(void) {
+    filterEscapeIsHeld = false;
+    filterComboTriggered = false;
+    filterPulseActive = false;
+}
+
+uint8_t FilterCabinetSwitches(uint8_t rawHardwareInput) {
+    uint8_t filteredOutput = rawHardwareInput;
+
+    filteredOutput &= ~ASIC_WPC_ESCAPE_BUTTON;
+
+    if (rawHardwareInput & ASIC_WPC_ESCAPE_BUTTON) {
+        filterEscapeIsHeld = true;
+        
+        // Check for Enter (0x80) OR Plus (0x40) to arm the combo
+        if (rawHardwareInput & (ASIC_WPC_ENTER_BUTTON | 0x40)) {
+            filterComboTriggered = true;
+        }
+    } else {
+        if (filterEscapeIsHeld) {
+            filterEscapeIsHeld = false;
+            
+            if (!filterComboTriggered) {
+                filterEscapePulseStart = ASICTotalticks; 
+                filterPulseActive = true;
+            }
+            filterComboTriggered = false;
+        }
+    }
+
+    if (filterPulseActive) {
+        if ((ASICTotalticks - filterEscapePulseStart) < 80000) {
+            filteredOutput |= ASIC_WPC_ESCAPE_BUTTON;
+        } else {
+            filterPulseActive = false;
+        }
+    }
+
+    return filteredOutput;
+}
+
+
+
+uint8_t ASICReadUnfilteredCabinetSwitches() {
+    __disable_irq();
+    SetDirectSwitchRowLine(false); // turn on U15
+    SetDataBusDirection(false); // set data lines to Read
+    DelayQuarterCycle();
+    uint8_t invertedData = ReadDataBus();
+    SetDirectSwitchRowLine(true); // turn off U15
+    SetDataBusDirection(true); // set data lines to Write
+    ASICCabinetSwitches = xformRow(invertedData ^ 0xFF);
+    __enable_irq();
+    return ASICCabinetSwitches;
+}
+
+
 uint8_t ASICRead(uint16_t offset) {
     uint16_t asicRAMOffset = offset - ASIC_RAM_BASE_ADDRESS;
     uint8_t temp = 0;
@@ -581,16 +674,7 @@ uint8_t ASICRead(uint16_t offset) {
             return ASICRam[asicRAMOffset];
 
         case WPC_SWITCH_CABINET_INPUT: {
-            __disable_irq();
-            SetDirectSwitchRowLine(false); // turn on U15
-            SetDataBusDirection(false); // set data lines to Read
-            DelayQuarterCycle();
-            uint8_t invertedData = ReadDataBus();
-            SetDirectSwitchRowLine(true); // turn off U15
-            SetDataBusDirection(true); // set data lines to Write
-            ASICCabinetSwitches = xformRow(invertedData ^ 0xFF);
-            __enable_irq();
-            return ASICCabinetSwitches;
+            return FilterCabinetSwitches(ASICReadUnfilteredCabinetSwitches());
         }
 
         case WPC_ROM_BANK:
@@ -809,4 +893,15 @@ void ASICSetGIDimmingAlgorithm(uint8_t dimmingAlgo) {
 
 uint8_t ASICGetGIDimmingAlgorithm() {
     return ASICGIDimmingAlgo;
+}
+
+
+bool ASICIsFlipperActive() {
+    if (ASICFlipperStateOverrideOn) return ASICFlipperStateOverrideValue;
+    return ASICFlipperActiveTimer > 0;
+}
+
+void ASICSetFlipperStateOverride(bool overrideOn, bool overrideValue) {
+    ASICFlipperStateOverrideOn = overrideOn;
+    ASICFlipperStateOverrideValue = overrideValue;
 }

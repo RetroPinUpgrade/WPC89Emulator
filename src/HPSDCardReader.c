@@ -9,7 +9,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "gd32f4xx.h"
+
+
+#include "asic.h"
+
+// Extern declaration to reach the 4KB RAM buffer in mpu89.c
+extern uint8_t* MPUGetNVRAMStart(void);
+extern uint16_t MPUGetNVRAMSize(void);
 
 // FatFs hardcoded dependency for file timestamps
 // Returning a fixed dummy time: Jan 1, 2024, 00:00:00
@@ -57,6 +65,7 @@ typedef struct {
 // Global pointer for easy read access anywhere in your code
 const Sector11Metadata_t* const metadataPtr = (const Sector11Metadata_t*)0x080E0000;
 const uint8_t* const HPSDRomData = (const uint8_t*)0x08100000;
+
 
 
 
@@ -249,8 +258,8 @@ uint16_t HPSDCardGetFileNames(char fileList[][13], uint16_t maxFiles, const char
                 break;
             }
 
-            // Filter out macOS metadata files (starts with '_' or contains '~')
-            if (fno.fname[0] == '_' || strchr(fno.fname, '~') != NULL) {
+            // Filter out hidden files and macOS metadata files (starts with '.', '_', or contains '~')
+            if ((fno.fattrib & AM_HID) || fno.fname[0] == '.' || fno.fname[0] == '_' || strchr(fno.fname, '~') != NULL) {
                 continue;
             }
 
@@ -357,4 +366,240 @@ uint32_t HPSDFlashRomFromSD(const char* filename, RomProgressCallback progressCb
     f_close(&file);
 
     return fileSize;
+}
+
+
+
+
+bool HPSDSaveGameState(const char* description) {
+    const char *romName = HPSDGetROMName();
+    if (romName == NULL || romName[0] == '\0') {
+        return false;
+    }
+
+    if (description == NULL) {
+        description = "SAVE";
+    }
+
+    size_t baseLen = strlen(romName);
+    if (baseLen >= 4) {
+        const char* ext = &romName[baseLen - 4];
+        if (ext[0] == '.' && (ext[1] == 'R' || ext[1] == 'r') && 
+            (ext[2] == 'O' || ext[2] == 'o') && (ext[3] == 'M' || ext[3] == 'm')) {
+            baseLen -= 4;
+        }
+    }
+
+    char filename[64];
+    snprintf(filename, sizeof(filename), "%.*s-%.10s.RAM", (int)baseLen, romName, description);
+
+    char path[128];
+    FILINFO fno;
+
+    if (f_stat(filename, &fno) == FR_OK) {
+        strncpy(path, filename, sizeof(path));
+        path[sizeof(path) - 1] = '\0';
+    } else {
+        f_mkdir("/GameStateFiles");
+        snprintf(path, sizeof(path), "/GameStateFiles/%s", filename);
+    }
+
+    // 1. Made static to pull the 512-byte sector buffer off the stack
+    static FIL file; 
+    FRESULT res = f_open(&file, path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) return false;
+
+    UINT bytesWritten;
+    res = f_write(&file, MPUGetNVRAMStart(), MPUGetNVRAMSize(), &bytesWritten);
+
+    // 2. Force the data through the driver
+    f_sync(&file);
+
+    // 3. Dummy delay to prevent the SDIO driver from dropping the final FAT updates.
+    // (Adjust the loop size based on your MCU clock speed to yield ~50ms)
+    for(volatile uint32_t delay = 0; delay < 2000000; delay++) {
+        __asm("nop");
+    }
+
+    FRESULT closeRes = f_close(&file);
+    return (res == FR_OK && closeRes == FR_OK && bytesWritten == MPUGetNVRAMSize());
+}
+
+
+bool HPSDLoadGameState(const char* filename) {
+    if (filename == NULL || filename[0] == '\0') {
+        return false;
+    }
+
+    FIL file;
+    FRESULT res;
+    char path[128];
+
+    // Try to open the file in the GameStateFiles sub-folder first
+    snprintf(path, sizeof(path), "/GameStateFiles/%s", filename);
+    res = f_open(&file, path, FA_READ);
+
+    // If it fails, fallback to the root directory
+    if (res != FR_OK) {
+        res = f_open(&file, filename, FA_READ);
+    }
+
+    // If it still failed to open in either location, abort
+    if (res != FR_OK) return false;
+
+    UINT bytesRead;
+    // Overwrite the live NVRAM with the saved payload
+    res = f_read(&file, MPUGetNVRAMStart(), MPUGetNVRAMSize(), &bytesRead);
+    f_close(&file);
+
+    return (res == FR_OK && bytesRead == MPUGetNVRAMSize());
+}
+
+
+uint16_t HPSDGetGameStateFiles(const char* romName, char fileList[][13], uint16_t maxFiles) {
+    DIR dir;
+    FILINFO fno;
+    FRESULT res;
+    uint16_t count = 0;
+
+    if (romName == NULL || romName[0] == '\0') return 0;
+    
+    // Determine the base length of the ROM name, stripping ".ROM" if present
+    size_t baseLen = strlen(romName);
+    if (baseLen >= 4) {
+        const char* ext = &romName[baseLen - 4];
+        if (ext[0] == '.' && 
+            (ext[1] == 'R' || ext[1] == 'r') && 
+            (ext[2] == 'O' || ext[2] == 'o') && 
+            (ext[3] == 'M' || ext[3] == 'm')) {
+            baseLen -= 4;
+        }
+    }
+
+    // Define the directories to search
+    const char* searchPaths[] = {"/GameStateFiles", "/"};
+    
+    for (int p = 0; p < 2; p++) {
+        if (count >= maxFiles) break;
+
+        res = f_opendir(&dir, searchPaths[p]);
+        if (res == FR_OK) {
+            for (;;) {
+                // Read a directory item
+                res = f_readdir(&dir, &fno);
+                
+                // Break on error or end of directory
+                if (res != FR_OK || fno.fname[0] == '\0') {
+                    break;
+                }
+
+                // Filter out directories, hidden files, and macOS metadata files
+                if ((fno.fattrib & AM_DIR) || (fno.fattrib & AM_HID) || fno.fname[0] == '.' || fno.fname[0] == '_' || strchr(fno.fname, '~') != NULL) {
+                    continue;
+                }
+                
+                // Ensure the file has a .RAM extension
+                if (MatchExtension(fno.fname, "ram")) {
+                    
+                    // Ensure the filename starts with the exact target ROM base name
+                    if (strncmp(fno.fname, romName, baseLen) == 0) {
+                        
+                        // Enforce the ROMNAME-XXXX structure by checking for the hyphen
+                        if (fno.fname[baseLen] == '-') {
+                            
+                            // Extract just the description (strip ROMNAME- and .RAM)
+                            const char* descStart = &fno.fname[baseLen + 1];
+                            const char* extStart = strrchr(descStart, '.');
+                            size_t descLen = (extStart != NULL) ? (size_t)(extStart - descStart) : strlen(descStart);
+                            
+                            // Bound length to fit within fileList[][13] (12 chars + null terminator)
+                            if (descLen > 12) {
+                                descLen = 12;
+                            }
+                            
+                            char tempDesc[13];
+                            strncpy(tempDesc, descStart, descLen);
+                            tempDesc[descLen] = '\0';
+                            
+                            // Check for duplicates to ensure a file in both folders is only listed once
+                            bool isDuplicate = false;
+                            for (uint16_t i = 0; i < count; i++) {
+                                if (strcmp(fileList[i], tempDesc) == 0) {
+                                    isDuplicate = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!isDuplicate && count < maxFiles) {
+                                // Copy the parsed description into the provided array
+                                strncpy(fileList[count], tempDesc, 13);
+                                count++;
+                            }
+                        }
+                    }
+                }
+            }
+            f_closedir(&dir);
+        }
+    }
+    
+    return count;
+}
+
+bool HPSDGetDescription(const char *filename, char *description, int maxDescriptionLen) {
+    if (filename == NULL || description == NULL || maxDescriptionLen <= 0) {
+        return false;
+    }
+
+    const char *romName = HPSDGetROMName();
+    if (romName == NULL || romName[0] == '\0') {
+        return false;
+    }
+
+    // Determine the base length of the ROM name, stripping ".ROM" if present
+    size_t baseLen = strlen(romName);
+    if (baseLen >= 4) {
+        const char* ext = &romName[baseLen - 4];
+        if (ext[0] == '.' && 
+            (ext[1] == 'R' || ext[1] == 'r') && 
+            (ext[2] == 'O' || ext[2] == 'o') && 
+            (ext[3] == 'M' || ext[3] == 'm')) {
+            baseLen -= 4;
+        }
+    }
+
+    // Check if the filename begins with the exact target ROM base name
+    if (strncmp(filename, romName, baseLen) != 0) {
+        return false;
+    }
+
+    // Ensure the next character is the expected hyphen 
+    if (filename[baseLen] != '-') {
+        return false;
+    }
+
+    // The description starts immediately after the hyphen
+    const char *descStart = &filename[baseLen + 1];
+
+    // Find the start of the file extension (e.g., .RAM) to exclude it
+    const char *extStart = strrchr(descStart, '.');
+    size_t descLen;
+
+    if (extStart != NULL) {
+        descLen = extStart - descStart;
+    } else {
+        // Fallback if the file somehow lacks an extension
+        descLen = strlen(descStart);
+    }
+
+    // Bound the length to prevent buffer overflows
+    if ((int)descLen >= maxDescriptionLen) {
+        descLen = maxDescriptionLen - 1;
+    }
+
+    // Copy the description into the buffer and null-terminate
+    strncpy(description, descStart, descLen);
+    description[descLen] = '\0';
+
+    return true;
 }

@@ -599,7 +599,7 @@ sd_error_enum sd_multiblocks_read(uint32_t *preadbuffer, uint32_t readaddr, uint
     /* blocksize is fixed in 512B for SDHC card */
     if(SDIO_HIGH_CAPACITY_SD_CARD == cardtype) {
         blocksize = 512;
-        readaddr /= 512;
+//        readaddr /= 512;
     }
 
     align = blocksize & (blocksize - 1);
@@ -761,7 +761,7 @@ sd_error_enum sd_block_write(uint32_t *pwritebuffer, uint32_t writeaddr, uint16_
     /* blocksize is fixed in 512B for SDHC card */
     if(SDIO_HIGH_CAPACITY_SD_CARD == cardtype) {
         blocksize = 512;
-        writeaddr /= 512;
+//        writeaddr /= 512;
     }
 
     align = blocksize & (blocksize - 1);
@@ -948,7 +948,7 @@ sd_error_enum sd_multiblocks_write(uint32_t *pwritebuffer, uint32_t writeaddr, u
     /* blocksize is fixed in 512B for SDHC card */
     if(SDIO_HIGH_CAPACITY_SD_CARD == cardtype) {
         blocksize = 512;
-        writeaddr /= 512;
+//        writeaddr /= 512;
     }
 
     align = blocksize & (blocksize - 1);
