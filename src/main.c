@@ -1091,7 +1091,56 @@ void SetupDisplay() {
 }
 
 
- int main(void) {
+void RebootEmulation(uint32_t currentTickCount, bool *initComplete, uint32_t *lastTicks) {
+    MPUInitROM(HPSDGetROMPointer(), HPSDGetROMSize());
+    MPUReset(true);
+    *initComplete = false;
+    *lastTicks = currentTickCount;
+    RTC_BKP2 = SecurityPICGetLearnedID();
+}
+
+
+uint8_t DelayedSendSoundCardInit(uint32_t currentTickCount, uint32_t startingTickCount) {
+
+    if ((currentTickCount-startingTickCount)>(CPU_TICKS_PER_SECOND/10)) {
+        HPSoundCardInitConnection();
+        return true;
+    }
+    return false;
+}
+
+
+uint8_t CheckSoundCard(uint32_t currentTickCount, uint32_t startingTickCount) {
+    if ((currentTickCount-startingTickCount)>CPU_TICKS_PER_SECOND) {
+        if (!HPBasicWAVSoundCardPresent()) {
+            MPUUseLegacySoundCard(true);
+        }
+        if (HPAdvancedWAVSoundCardPresent()) {
+            // Request the volumes 
+            HPSoundCardRequestSynthVol();
+            HPSoundCardRequestDACVol();
+            HPSoundCardRequestCVSDVol();
+        }
+        return true;
+    }
+    return false;
+}
+
+uint8_t CheckSoundCardVolumes(uint32_t currentTickCount, uint32_t startingTickCount) {
+    if ((currentTickCount-startingTickCount)>(CPU_TICKS_PER_SECOND*2)) {
+        if (    HPSoundCardCurSynthVol(&StartingSynthVolL, &StartingSynthVolR) &&
+                HPSoundCardCurDACVol(&StartingDACVolL, &StartingDACVolR) && 
+                HPSoundCardCurCVSDVol(&StartingCVSDVolL, &StartingCVSDVolR) ) {
+            SetInitialVolumeAndBalance();
+        }
+        return true;
+    }
+    return false;
+}
+
+
+
+int main(void) {
     SwitchTo240MHz();
     // Right after reset, before doing anything else, read
     // some real-time clock values
@@ -1150,6 +1199,7 @@ void SetupDisplay() {
     bool FIRQHasBeenTriggered = false;
     bool pauseEmulationForMenu = false;
     bool romInitComplete = false;
+    bool soundCardVersionReRequested = false;
     bool soundCardChecked = false;
     bool volumesChecked = false;
     bool speedrunTransitionComplete = false;
@@ -1181,34 +1231,10 @@ void SetupDisplay() {
         if (MPUDisplayHighPageOverride()) RPU_WPC_DisplayShowLogo(1, lastTickCount);
         uint32_t currentTickCount = TwoMHzTicksSinceStart();
 
-        if (ASICRebootRequested()) {
-            MPUInitROM(HPSDGetROMPointer(), HPSDGetROMSize());
-            MPUReset(true);
-            romInitComplete = false;
-            lastTickCount = currentTickCount;
-            RTC_BKP2 = SecurityPICGetLearnedID();
-        }
-
-        if (!soundCardChecked && (currentTickCount-startingTickCount)>CPU_TICKS_PER_SECOND) {
-            soundCardChecked = true;
-            if (!HPBasicWAVSoundCardPresent()) {
-                MPUUseLegacySoundCard(true);
-            }
-            if (HPAdvancedWAVSoundCardPresent()) {
-                // Request the volumes 
-                HPSoundCardRequestSynthVol();
-                HPSoundCardRequestDACVol();
-                HPSoundCardRequestCVSDVol();
-            }
-        }
-        if (!volumesChecked && (currentTickCount-startingTickCount)>(CPU_TICKS_PER_SECOND*2)) {
-            volumesChecked = true;
-            if (    HPSoundCardCurSynthVol(&StartingSynthVolL, &StartingSynthVolR) &&
-                    HPSoundCardCurDACVol(&StartingDACVolL, &StartingDACVolR) && 
-                    HPSoundCardCurCVSDVol(&StartingCVSDVolL, &StartingCVSDVolR) ) {
-                SetInitialVolumeAndBalance();
-            }
-        }
+        if (ASICRebootRequested()) RebootEmulation(currentTickCount, &romInitComplete, &lastTickCount);
+        if (!soundCardVersionReRequested) soundCardVersionReRequested = DelayedSendSoundCardInit(currentTickCount, startingTickCount);
+        if (!soundCardChecked) soundCardChecked = CheckSoundCard(currentTickCount, startingTickCount);
+        if (!volumesChecked) volumesChecked = CheckSoundCardVolumes(currentTickCount, startingTickCount);
 
         if (ASICGetBlanking()) {
             // also, check to see if the operator wants to 

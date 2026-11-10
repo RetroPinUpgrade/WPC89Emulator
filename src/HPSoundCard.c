@@ -1,6 +1,7 @@
 #include "HPSoundCard.h"
 #include "gd32f4xx.h"
 #include <string.h>
+#include <stdio.h>
 
 void HPSoundCardSetAmpPwr(bool enable);
 bool HPSoundCardGetVersion(char *pDst, int len);
@@ -31,31 +32,32 @@ void HPSoundCardTrackFade(int trk, int gain, int time, bool stopFlag);
 void HPSoundCardSamplerateOffset(int offset);
 void HPSoundCardSetTriggerBank(int bank);
 
+// System & Global Commands
 #define CMD_GET_VERSION             0x01
 #define CMD_GET_SYS_INFO            0x02
 #define CMD_TRACK_CONTROL           0x03
 #define CMD_STOP_ALL                0x04
 #define CMD_MAIN_VOLUME             0x05 
-#define CMD_AMP_POWER               0x09
+#define CMD_GET_STATUS              0x07
 #define CMD_TRACK_VOLUME            0x08
+#define CMD_AMP_POWER               0x09
 #define CMD_TRACK_FADE              0x0A
 #define CMD_RESUME_ALL_SYNC         0x0B
 #define CMD_SAMPLERATE_OFFSET       0x0C
-#define CMD_SET_REPORTING           0x0D
-#define CMD_SET_TRIGGER_BANK        0x0E
-#define CMD_TRACK_CONTROL_EX        0x0F
-#define CMD_SET_SYNTH_VOLUME        0x20 
-#define CMD_SET_DAC_VOLUME          0x21 
-#define CMD_SET_CVSD_VOLUME         0x22
-#define CMD_GET_SYNTH_VOLUME        0x23 
-#define CMD_GET_DAC_VOLUME          0x24 
-#define CMD_GET_CVSD_VOLUME         0x25
-#define CMD_GET_NUM_WAV_FILES       0x30
-#define CMD_GET_NUM_WAV_FOLDERS     0x31
-#define CMD_GET_NUM_ROMS            0x32
-#define CMD_GET_ROM_NAME            0x38
-#define CMD_FLASH_ROM               0x39
-#define CMD_GET_CURRENT_ROM_NAME    0x3A
+#define CMD_TRACK_CONTROL_EX        0x0D
+#define CMD_SET_REPORTING           0x0E
+#define CMD_SET_TRIGGER_BANK        0x0F
+
+// Expanded & Class Commands
+#define CMD_PLAY_EX                 0x60
+#define CMD_CLASS_GAIN              0x61
+#define CMD_DUCK_RULE               0x62
+#define CMD_LOOP_POINTS             0x63
+#define CMD_GET_SOUNDTRACK_FOLDERS  0x64
+#define CMD_STOP_CLASS              0x65
+#define CMD_SET_EVENTS_FLAGS        0x66
+#define CMD_SET_SOUNDTRACK_FOLDER   0x67
+#define CMD_SYNTH_CONTROL           0x70
 
 #define TRK_PLAY_SOLO               0
 #define TRK_PLAY_POLY               1
@@ -66,17 +68,14 @@ void HPSoundCardSetTriggerBank(int bank);
 #define TRK_LOOP_OFF                6
 #define TRK_LOAD                    7
 
-#define RSP_VERSION_STRING          129
-#define RSP_SYSTEM_INFO             130
-#define RSP_STATUS                  131
-#define RSP_TRACK_REPORT            132
-#define RSP_SYNTH_VOL               140
-#define RSP_DAC_VOL                 141
-#define RSP_CVSD_VOL                142
-#define RSP_NUM_ROMS                145
-#define RSP_FILE_NAME               146
-#define RSP_ROM_FLASH_RESULT        147
-#define RSP_CURRENT_ROM_NAME        148
+// Responses
+#define RSP_VERSION_STRING          0x81
+#define RSP_SYSTEM_INFO             0x82
+#define RSP_STATUS                  0x83
+#define RSP_TRACK_REPORT            0x84
+#define RSP_EVENT                   0x8A
+#define RSP_SOUNDTRACK              0x8B
+#define RSP_SYNTH_RESPONSE          0x8F
 
 
 #define SOM1                        0xf0
@@ -126,8 +125,8 @@ uint16_t HPSCNumROMs = 0xFFFF;
 char HPSCFileName[128];
 char HPSCCurrentROMName[128];
 uint8_t HPSCFlashResultCode = 0xFF;
-char HPSCFlashResultText[11];
-
+char HPSCFlashResultText[16];
+uint8_t HPSCSoundtrackCount = 0;
 
 #define HPSC_PRIMARY_VOLUME_MASK        0x000000FF
 #define HPSC_MUSIC_VOLUME_MASK          0x0000FF00
@@ -165,10 +164,6 @@ int HPSCOneShotMusicTracks[HPSC_NUMBER_OF_ONE_SHOT_MUSIC_TRACKS] = {3, 5};
 int HPSCCalloutTracks[HPSC_NUMBER_OF_CALLOUT_TRACKS] = {26, 31, 72};
 int HPSCSoundEffectsTracks[HPSC_NUMBER_OF_SOUND_EFFECTS_TRACKS] = {86, 142, 143};
 
-// Unmapped
-// 86 ?
-// 142 credits (single?)
-// 143 credits (center slot / multiple?, also max?)
 
 void HPSoundCardTrackControl(int trk, int code);
 void HPSoundCardTrackControlLock(int trk, int code, bool lock);
@@ -398,7 +393,7 @@ bool HPSoundCardInitConnection() {
   usart_enable(USART1);
   
   HPSCVerionRcvd = false;
-  HPSCVerion[0] = '\0';
+  HPSCVerion[0] = '\0'; // Fixed null terminator
   HPSCSysinfoRcvd = false;
 
   byte volumeIndex = RTC_BKP9 & HPSC_PRIMARY_VOLUME_MASK;
@@ -426,7 +421,7 @@ bool HPSoundCardInitConnection() {
   HPSoundCardStopAllTracks();
   HPSoundCardSetReporting(true);
   HPSoundCardMasterGain(HPSCGetGainFromLevel(volumeIndex));
-  HPSoundCardTrackPlayPoly(999); // startup bong
+//  HPSoundCardTrackPlayPoly(999); // startup bong
   HPSoundCardRequestVersion();
 
   return true;
@@ -436,8 +431,6 @@ bool HPSoundCardInitConnection() {
 bool HPBasicWAVSoundCardPresent() {
   bool basicSoundCard = false;  
   if (HPSCVerionRcvd) {
-      // A standard Robertsonics board version string begins with "WAV Trigger"
-      // By checking the first 11 characters, we ignore the specific version number (e.g., " v1.34")
       if (strncmp(HPSCVerion, "WAV Trigger", 11) == 0) {
           basicSoundCard = true;
       }
@@ -449,7 +442,7 @@ bool HPBasicWAVSoundCardPresent() {
 bool HPAdvancedWAVSoundCardPresent() {
   bool advSoundCard = false;  
   if (HPSCVerionRcvd) {
-      if (strncmp(HPSCVerion, "WPCS Audio", 10) == 0) {
+      if (strncmp(HPSCVerion, "RPU-SP", 6) == 0) {
         advSoundCard = true;
       }
   }
@@ -656,7 +649,6 @@ void HPSoundCardUpdate(void) {
         HPSCrxCount++;
       else {
         HPSCrxCount = 0;
-        //Serial.print("Bad msg 1\n");
       }
     }
     else if (HPSCrxCount == 2) {
@@ -666,7 +658,6 @@ void HPSoundCardUpdate(void) {
       }
       else {
         HPSCrxCount = 0;
-        //Serial.print("Bad msg 2\n");
       }
     }
     else if ((HPSCrxCount > 2) && (HPSCrxCount < HPSCrxLen)) {
@@ -678,12 +669,10 @@ void HPSoundCardUpdate(void) {
         HPSCrxMsgReady = true;
       else {
         HPSCrxCount = 0;
-        //Serial.print("Bad msg 3\n");
       }
     }
     else {
       HPSCrxCount = 0;
-      //Serial.print("Bad msg 4\n");
     }
 
     if (HPSCrxMsgReady) {
@@ -717,44 +706,49 @@ void HPSoundCardUpdate(void) {
           HPSCSysinfoRcvd = true;
           break;
 
-        case RSP_SYNTH_VOL:
-          HPSCSynthVolL = HPSCrxMessage[1] | (HPSCrxMessage[2])<<8;
-          HPSCSynthVolR = HPSCrxMessage[3] | (HPSCrxMessage[4])<<8;
-          break;
+        case RSP_SYNTH_RESPONSE:
+            if (HPSCrxLen >= 5) { // Ensure at least command ID is present
+                uint8_t synthCmd = HPSCrxMessage[1];
+                if (synthCmd == 0x01 && HPSCrxLen >= 8) { // Get Volume
+                    uint8_t volId = HPSCrxMessage[2];
+                    if (volId == 0x01) {
+                        HPSCSynthVolL = HPSCrxMessage[3] | (HPSCrxMessage[4]<<8);
+                        HPSCSynthVolR = HPSCrxMessage[5] | (HPSCrxMessage[6]<<8);
+                    } else if (volId == 0x02) {
+                        HPSCDACVolL = HPSCrxMessage[3] | (HPSCrxMessage[4]<<8);
+                        HPSCDACVolR = HPSCrxMessage[5] | (HPSCrxMessage[6]<<8);
+                    } else if (volId == 0x03) {
+                        HPSCCVSDVolL = HPSCrxMessage[3] | (HPSCrxMessage[4]<<8);
+                        HPSCCVSDVolR = HPSCrxMessage[5] | (HPSCrxMessage[6]<<8);
+                    }
+                } else if (synthCmd == 0x03 && HPSCrxLen >= 3) { // Get Num ROMs
+                    HPSCNumROMs = HPSCrxMessage[2]; 
+                } else if (synthCmd == 0x04) { // Get ROM Name
+                    for (uint8_t count=0; count<64 && (2+count) < HPSCrxLen; count++) {
+                        HPSCFileName[count] = HPSCrxMessage[2+count];
+                        if (HPSCFileName[count] == 0) break;
+                    }
+                } else if (synthCmd == 0x05) { // Get Current ROM
+                    for (uint8_t count=0; count<64 && (2+count) < HPSCrxLen; count++) {
+                        HPSCCurrentROMName[count] = HPSCrxMessage[2+count];
+                        if (HPSCCurrentROMName[count] == 0) break;
+                    }
+                } else if (synthCmd == 0x06 && HPSCrxLen >= 3) { // Flash ROM
+                    HPSCFlashResultCode = HPSCrxMessage[2];
+                    if (HPSCFlashResultCode == 0xFF) {
+                        strcpy(HPSCFlashResultText, "ERROR");
+                    } else if (HPSCFlashResultCode == 100) {
+                        strcpy(HPSCFlashResultText, "SUCCESS");
+                    } else {
+                        snprintf(HPSCFlashResultText, 16, "%d%%", HPSCFlashResultCode);
+                    }
+                }
+            }
+            break;
 
-        case RSP_DAC_VOL:
-          HPSCDACVolL = HPSCrxMessage[1] | (HPSCrxMessage[2])<<8;
-          HPSCDACVolR = HPSCrxMessage[3] | (HPSCrxMessage[4])<<8;
-          break;
-
-        case RSP_CVSD_VOL:
-          HPSCCVSDVolL = HPSCrxMessage[1] | (HPSCrxMessage[2])<<8;
-          HPSCCVSDVolR = HPSCrxMessage[3] | (HPSCrxMessage[4])<<8;
-          break;
-
-        case RSP_NUM_ROMS:
-          HPSCNumROMs = HPSCrxMessage[1] | (HPSCrxMessage[2])<<8;
-          break;
-
-        case RSP_FILE_NAME:
-          for (uint8_t count=0; count<128; count++) {
-            HPSCFileName[count] = HPSCrxMessage[1+count];
-          }
-          break;
-
-        case RSP_ROM_FLASH_RESULT:
-          HPSCFlashResultCode = HPSCrxMessage[1];
-          for (uint8_t count=0; count<10; count++) {
-            HPSCFlashResultText[count] = HPSCrxMessage[2+count];
-          }
-          HPSCFlashResultText[10] = '\0';
-          break;
-
-        case RSP_CURRENT_ROM_NAME:
-          for (uint8_t count=0; count<128; count++) {
-            HPSCCurrentROMName[count] = HPSCrxMessage[1+count];
-          }
-          break;          
+        case RSP_SOUNDTRACK:
+            HPSCSoundtrackCount = HPSCrxMessage[1];
+            break;
 
       }
       HPSCrxCount = 0;
@@ -784,8 +778,6 @@ int HPSoundCardGetPlayingTrack(int voiceNum) {
   if (voiceNum>=MAX_NUM_VOICES || voiceNum<0) return 0xFFFF;
   return (HPSCVoiceTable[voiceNum]);
 }
-
-
 
 
 void HPSoundCardMasterGain(int gain) {
@@ -1038,40 +1030,155 @@ void HPSoundCardSetTriggerBank(int bank) {
 
 
 
-void HPSoundCardRequestSynthVol() {
-  HPSCSynthVolL = 0x8000;
-  HPSCSynthVolR = 0x8000;
+// Expanded Play Ex Command
+void HPSoundCardPlayEx(int trk, uint8_t clsId, uint8_t flags, int gain, uint8_t prio) {
+  uint8_t txbuf[12];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x0C;
+  txbuf[3] = CMD_PLAY_EX;
+  txbuf[4] = (uint8_t)trk;
+  txbuf[5] = (uint8_t)(trk >> 8);
+  txbuf[6] = clsId;
+  txbuf[7] = flags;
+  uint16_t vol = (uint16_t)gain;
+  txbuf[8] = (uint8_t)vol;
+  txbuf[9] = (uint8_t)(vol >> 8);
+  txbuf[10] = prio;
+  txbuf[11] = EOM;
+  SerialWriteBuf(txbuf, 12);
+}
+
+// Class Gain Command
+void HPSoundCardClassGain(uint8_t clsId, int gain, int fadeTime) {
+  uint8_t txbuf[10];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x0A;
+  txbuf[3] = CMD_CLASS_GAIN;
+  txbuf[4] = clsId;
+  uint16_t vol = (uint16_t)gain;
+  txbuf[5] = (uint8_t)vol;
+  txbuf[6] = (uint8_t)(vol >> 8);
+  uint16_t ft = (uint16_t)fadeTime;
+  txbuf[7] = (uint8_t)ft;
+  txbuf[8] = (uint8_t)(ft >> 8);
+  txbuf[9] = EOM;
+  SerialWriteBuf(txbuf, 10);
+}
+
+// Duck Rule Command
+void HPSoundCardDuckRule(uint8_t duckedCls, uint8_t duckingCls, int8_t gain, int attackTime, int releaseTime) {
+  uint8_t txbuf[12];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x0C;
+  txbuf[3] = CMD_DUCK_RULE;
+  txbuf[4] = duckedCls;
+  txbuf[5] = duckingCls;
+  txbuf[6] = (uint8_t)gain;
+  uint16_t at = (uint16_t)attackTime;
+  txbuf[7] = (uint8_t)at;
+  txbuf[8] = (uint8_t)(at >> 8);
+  uint16_t rt = (uint16_t)releaseTime;
+  txbuf[9] = (uint8_t)rt;
+  txbuf[10] = (uint8_t)(rt >> 8);
+  txbuf[11] = EOM;
+  SerialWriteBuf(txbuf, 12);
+}
+
+// Stop Class Command
+void HPSoundCardStopClass(uint8_t clsId, int fadeTime) {
+  uint8_t txbuf[8];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x08;
+  txbuf[3] = CMD_STOP_CLASS;
+  txbuf[4] = clsId;
+  uint16_t ft = (uint16_t)fadeTime;
+  txbuf[5] = (uint8_t)ft;
+  txbuf[6] = (uint8_t)(ft >> 8);
+  txbuf[7] = EOM;
+  SerialWriteBuf(txbuf, 8);
+}
+
+// Set Events Flags
+void HPSoundCardSetEventsFlags(uint8_t mask, uint8_t clsId) {
+  uint8_t txbuf[7];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_SET_EVENTS_FLAGS;
+  txbuf[4] = mask;
+  txbuf[5] = clsId;
+  txbuf[6] = EOM;
+  SerialWriteBuf(txbuf, 7);
+}
+
+// Set Soundtrack Folder
+void HPSoundCardSetSoundtrackFolder(uint8_t folderNum) {
+  uint8_t txbuf[6];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x06;
+  txbuf[3] = CMD_SET_SOUNDTRACK_FOLDER;
+  txbuf[4] = folderNum;
+  txbuf[5] = EOM;
+  SerialWriteBuf(txbuf, 6);
+}
+
+// Get Soundtrack Folders
+void HPSoundCardRequestSoundtrackFolders() {
   uint8_t txbuf[5];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
   txbuf[2] = 0x05;
-  txbuf[3] = CMD_GET_SYNTH_VOLUME;
+  txbuf[3] = CMD_GET_SOUNDTRACK_FOLDERS;
   txbuf[4] = EOM;
   SerialWriteBuf(txbuf, 5);
+}
+
+
+void HPSoundCardRequestSynthVol() {
+  HPSCSynthVolL = 0x8000;
+  HPSCSynthVolR = 0x8000;
+  uint8_t txbuf[7];
+  txbuf[0] = SOM1;
+  txbuf[1] = SOM2;
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x01; // Cmd: Get Vol
+  txbuf[5] = 0x01; // ID: Synth
+  txbuf[6] = EOM;
+  SerialWriteBuf(txbuf, 7);
 }
 
 void HPSoundCardRequestDACVol() {
   HPSCDACVolL = 0x8000;
   HPSCDACVolR = 0x8000;
-  uint8_t txbuf[5];
+  uint8_t txbuf[7];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x05;
-  txbuf[3] = CMD_GET_DAC_VOLUME;
-  txbuf[4] = EOM;
-  SerialWriteBuf(txbuf, 5);
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x01; // Cmd: Get Vol
+  txbuf[5] = 0x02; // ID: DAC
+  txbuf[6] = EOM;
+  SerialWriteBuf(txbuf, 7);
 }
 
 void HPSoundCardRequestCVSDVol() {
   HPSCCVSDVolL = 0x8000;
   HPSCCVSDVolR = 0x8000;
-  uint8_t txbuf[5];
+  uint8_t txbuf[7];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x05;
-  txbuf[3] = CMD_GET_CVSD_VOLUME;
-  txbuf[4] = EOM;
-  SerialWriteBuf(txbuf, 5);
+  txbuf[2] = 0x07;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x01; // Cmd: Get Vol
+  txbuf[5] = 0x03; // ID: CVSD
+  txbuf[6] = EOM;
+  SerialWriteBuf(txbuf, 7);
 }
 
 
@@ -1079,51 +1186,57 @@ void HPSoundCardSetSynthVol(int16_t leftVol, int16_t rightVol) {
   HPSCSynthVolL = leftVol;
   HPSCSynthVolR = rightVol;
 
-  uint8_t txbuf[9];
+  uint8_t txbuf[11];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x09;
-  txbuf[3] = CMD_SET_SYNTH_VOLUME;
-  txbuf[4] = HPSCSynthVolL & 0xFF;
-  txbuf[5] = HPSCSynthVolL >> 8;
-  txbuf[6] = HPSCSynthVolR & 0xFF;
-  txbuf[7] = HPSCSynthVolR >> 8;
-  txbuf[8] = EOM;
-  SerialWriteBuf(txbuf, 9);
+  txbuf[2] = 0x0B;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x02; // Set Vol
+  txbuf[5] = 0x01; // Synth ID
+  txbuf[6] = HPSCSynthVolL & 0xFF;
+  txbuf[7] = (HPSCSynthVolL >> 8) & 0xFF;
+  txbuf[8] = HPSCSynthVolR & 0xFF;
+  txbuf[9] = (HPSCSynthVolR >> 8) & 0xFF;
+  txbuf[10] = EOM;
+  SerialWriteBuf(txbuf, 11);
 }
 
 void HPSoundCardSetDACVol(int16_t leftVol, int16_t rightVol) {
   HPSCDACVolL = leftVol;
   HPSCDACVolR = rightVol;
 
-  uint8_t txbuf[9];
+  uint8_t txbuf[11];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x09;
-  txbuf[3] = CMD_SET_DAC_VOLUME;
-  txbuf[4] = HPSCDACVolL & 0xFF;
-  txbuf[5] = HPSCDACVolL >> 8;
-  txbuf[6] = HPSCDACVolR & 0xFF;
-  txbuf[7] = HPSCDACVolR >> 8;
-  txbuf[8] = EOM;
-  SerialWriteBuf(txbuf, 9);  
+  txbuf[2] = 0x0B;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x02; // Set Vol
+  txbuf[5] = 0x02; // DAC ID
+  txbuf[6] = HPSCDACVolL & 0xFF;
+  txbuf[7] = (HPSCDACVolL >> 8) & 0xFF;
+  txbuf[8] = HPSCDACVolR & 0xFF;
+  txbuf[9] = (HPSCDACVolR >> 8) & 0xFF;
+  txbuf[10] = EOM;
+  SerialWriteBuf(txbuf, 11);  
 }
 
 void HPSoundCardSetCVSDVol(int16_t leftVol, int16_t rightVol) {
   HPSCCVSDVolL = leftVol;
   HPSCCVSDVolR = rightVol;
   
-  uint8_t txbuf[9];
+  uint8_t txbuf[11];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x09;
-  txbuf[3] = CMD_SET_CVSD_VOLUME;
-  txbuf[4] = HPSCCVSDVolL & 0xFF;
-  txbuf[5] = HPSCCVSDVolL >> 8;
-  txbuf[6] = HPSCCVSDVolR & 0xFF;
-  txbuf[7] = HPSCCVSDVolR >> 8;
-  txbuf[8] = EOM;
-  SerialWriteBuf(txbuf, 9);
+  txbuf[2] = 0x0B;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x02; // Set Vol
+  txbuf[5] = 0x03; // CVSD ID
+  txbuf[6] = HPSCCVSDVolL & 0xFF;
+  txbuf[7] = (HPSCCVSDVolL >> 8) & 0xFF;
+  txbuf[8] = HPSCCVSDVolR & 0xFF;
+  txbuf[9] = (HPSCCVSDVolR >> 8) & 0xFF;
+  txbuf[10] = EOM;
+  SerialWriteBuf(txbuf, 11);
 }
 
 bool HPSoundCardCurSynthVol(int16_t *curLeft, int16_t *curRight) {
@@ -1150,13 +1263,14 @@ bool HPSoundCardCurCVSDVol(int16_t *curLeft, int16_t *curRight) {
 
 void HPSoundCardRequestNumROMs() {
   HPSCNumROMs = 0xFFFF;
-  uint8_t txbuf[5];
+  uint8_t txbuf[6];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x05;
-  txbuf[3] = CMD_GET_NUM_ROMS;
-  txbuf[4] = EOM;
-  SerialWriteBuf(txbuf, 5);
+  txbuf[2] = 0x06;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x03; // Cmd: Get Num ROMs
+  txbuf[5] = EOM;
+  SerialWriteBuf(txbuf, 6);
 }
 
 bool HPSoundCardCurNumROMs(uint16_t *numRoms) {
@@ -1174,9 +1288,9 @@ void HPSoundCardRequestROMName(uint16_t romNum) {
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
   txbuf[2] = 0x07;
-  txbuf[3] = CMD_GET_ROM_NAME;
-  txbuf[4] = romNum & 0xFF;
-  txbuf[5] = romNum >> 8;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x04; // Cmd: Get ROM Name
+  txbuf[5] = romNum & 0xFF;
   txbuf[6] = EOM;
   SerialWriteBuf(txbuf, 7);
 }
@@ -1191,14 +1305,14 @@ char *HPSoundCardCurROMName() {
 void HPSoundCardFlashROM(uint16_t romNum) {
   HPSCFlashResultCode = 0xFF;
   HPSCFlashResultText[0] = 0x00;
-
+  
   uint8_t txbuf[7];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
   txbuf[2] = 0x07;
-  txbuf[3] = CMD_FLASH_ROM;
-  txbuf[4] = romNum & 0xFF;
-  txbuf[5] = romNum >> 8;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x06; // Cmd: Flash ROM
+  txbuf[5] = romNum & 0xFF;
   txbuf[6] = EOM;
   SerialWriteBuf(txbuf, 7);  
 }
@@ -1218,13 +1332,14 @@ char *HPSoundCardCurFlashMessage() {
 void HPSoundCardRequestCurrentROMName(void) {
   HPSCCurrentROMName[0] = 0x00; // Invalidate the old string
 
-  uint8_t txbuf[5];
+  uint8_t txbuf[6];
   txbuf[0] = SOM1;
   txbuf[1] = SOM2;
-  txbuf[2] = 0x05;
-  txbuf[3] = CMD_GET_CURRENT_ROM_NAME;
-  txbuf[4] = EOM;
-  SerialWriteBuf(txbuf, 5);
+  txbuf[2] = 0x06;
+  txbuf[3] = CMD_SYNTH_CONTROL;
+  txbuf[4] = 0x05; // Cmd: Get Current ROM Name
+  txbuf[5] = EOM;
+  SerialWriteBuf(txbuf, 6);
 }
 
 char *HPSoundCardGetActiveROMName(void) {

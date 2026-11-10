@@ -67,6 +67,7 @@ bool SoundCardErrorShown = false;
 static uint8_t synthVol, synthBal, DACVol, DACBal, CVSDVol, CVSDBal;
 int8_t SC_Vol, SC_Bal;
 bool SoundCardWaitingForResponse;
+static uint8_t LastSoundCardFlashCode = 0xFF;
 void SetRelativeVolumeAndBalance(   uint8_t synthVol, uint8_t synthBal,
                                     uint8_t DACVol, uint8_t DACBal,
                                     uint8_t CVSDVol, uint8_t CVSDBal,
@@ -211,7 +212,7 @@ void FlashProgressCallback(uint32_t currentBytes, uint32_t totalBytes, uint8_t i
         RPU_WPC_DrawRectangleXY(6, 22, 115*progress/100, 7, true, MAX_BRIGHTNESS_COLOR);
     }
 
-    snprintf(buf, 128, "%s", SDCardFileList[NewROMNum]);            
+    snprintf(buf, 128, "%.19s", SDCardFileList[NewROMNum]); 
     RPU_WPC_DrawTextToScratchXY((const char *)buf, 6, 12, MAX_BRIGHTNESS_COLOR);
 
     // Commit statically, no alternative target needed during a blocking operation
@@ -436,6 +437,7 @@ void RPU_WPC_HandleAdjustment(uint8_t cabinetInput) {
                     SoundCardEditorMode = 1; // Start ROM browsing
                     NewROMNum = 0;
                     HPSoundCardRequestNumROMs();
+                    HPSoundCardRequestROMName(NewROMNum); 
                     SoundCardDataValid = false;
                     SoundCardRequestTicks = RPUWPCCurrentTicks;
                     RPUWPCSubItemChanged = true;
@@ -447,6 +449,7 @@ void RPU_WPC_HandleAdjustment(uint8_t cabinetInput) {
                 if (RPUWPCSubMenuPage == 4) {
                     if (SoundCardEditorMode == 1) {
                         HPSoundCardFlashROM(NewROMNum);
+                        LastSoundCardFlashCode = 0xFF; // Reset progress tracker
                         SoundCardEditorMode = 2; // Move to Flashing state
                         SoundCardDataValid = false;
                         SoundCardRequestTicks = RPUWPCCurrentTicks;
@@ -470,6 +473,8 @@ void RPU_WPC_HandleAdjustment(uint8_t cabinetInput) {
                                 if (NewROMNum < 0) NewROMNum = numRoms - 1;
                             }
                             HPSoundCardRequestROMName(NewROMNum);
+                            SoundCardDataValid = false;                 
+                            SoundCardRequestTicks = RPUWPCCurrentTicks; 
                             RPUWPCSubItemChanged = true;
                         }
                     }
@@ -564,6 +569,12 @@ void RPU_WPC_NavigateMenu(uint8_t cabinetInput) {
                     SoundCardEditorMode = 0;
                     AnimationDirection = 2;
                     RPUWPCSubItemChanged = true;
+                    if (RPUWPCSubMenuPage == 4) {
+                        SoundCardDataValid = false;
+                        SoundCardErrorShown = false;
+                        SoundCardRequestTicks = RPUWPCCurrentTicks;
+                        HPSoundCardRequestCurrentROMName();
+                    }
                 } else {
                     GameStateNamePickerMode = 0; 
                     SettingsFileOpResult = -1;
@@ -707,7 +718,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
         snprintf(buf, 128, "         ROM");
         RPU_WPC_DrawTextToScratch((const char *)buf, MAX_BRIGHTNESS_COLOR);
         if (RPUWPCSubMenuPage == 1) {
-            snprintf(buf, 128, "%s", HPSDGetROMName());
+            snprintf(buf, 128, "%.19s", HPSDGetROMName());
             RPU_WPC_DrawTextToScratchXY((const char *)buf, 6, 12, MAX_BRIGHTNESS_COLOR);
 
             if (!HPSDCardInserted()) {
@@ -731,7 +742,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
 
             // Only draw the file name text if this isn't the alternate (blanking) pass
             if (!isAlternate) {
-                snprintf(buf, 128, "%s", SDCardFileList[NewROMNum]);            
+                snprintf(buf, 128, "%.19s", SDCardFileList[NewROMNum]);            
                 RPU_WPC_DrawTextToScratchXY((const char *)buf, 6, 12, MAX_BRIGHTNESS_COLOR);
             }
         }
@@ -842,12 +853,12 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
             RPU_WPC_DrawRectangleXY(bx - 1, 21, 3, 5, true, MAX_BRIGHTNESS_COLOR - 1);
             
         } else if (RPUWPCSubMenuPage == 4) {
-            if (!SoundCardDataValid && !SoundCardErrorShown) {
+            if (!SoundCardDataValid && !SoundCardErrorShown && SoundCardEditorMode != 2) {
                 RPU_WPC_DrawTextToScratchXY("Requesting...", 25, 16, MAX_BRIGHTNESS_COLOR);
-           }            
+            }
             if (SoundCardEditorMode == 0) {
                 // State 0: Viewing active ROM
-                snprintf(buf, 128, "%s", HPSoundCardGetActiveROMName());
+                snprintf(buf, 128, "%.19s", HPSoundCardGetActiveROMName());
                 RPU_WPC_DrawTextToScratchXY((const char *)buf, 10, 14, MAX_BRIGHTNESS_COLOR);
                 RPU_WPC_DrawTextToScratchXY("(Enter to Browse)", 3, 23, MAX_BRIGHTNESS_COLOR);
             } else if (SoundCardEditorMode == 1) {
@@ -855,7 +866,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
                 char *romName = HPSoundCardCurROMName();
                 if (romName) {
                     if (!isAlternate) { // Flashes via the Alternate draw target system
-                        snprintf(buf, 128, "%s", romName);
+                        snprintf(buf, 128, "%.19s", romName);
                         RPU_WPC_DrawTextToScratchXY((const char *)buf, 10, 14, MAX_BRIGHTNESS_COLOR);
                     }
                 } else {
@@ -871,16 +882,27 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
                 // State 2: Flashing Progress / Result
                 uint8_t code;
                 if (HPSoundCardCurFlashCode(&code)) {
-                    RPU_WPC_DrawTextToScratchXY("FLASH COMPLETE", 10, 12, MAX_BRIGHTNESS_COLOR);
-                    char *msg = HPSoundCardCurFlashMessage();
-                    if (msg) RPU_WPC_DrawTextToScratchXY(msg, 10, 21, MAX_BRIGHTNESS_COLOR);
+                    if (code >= 100) {
+                        RPU_WPC_DrawTextToScratchXY("FLASH COMPLETE", 10, 12, MAX_BRIGHTNESS_COLOR);
+                        char *msg = HPSoundCardCurFlashMessage();
+                        if (msg) RPU_WPC_DrawTextToScratchXY(msg, 10, 21, MAX_BRIGHTNESS_COLOR);
+                    } else {
+                        if (!isAlternate) {
+                            RPU_WPC_DrawTextToScratchXY("FLASHING...", 10, 12, MAX_BRIGHTNESS_COLOR);
+                        }
+                        RPU_WPC_DrawRectangleXY(6, 22, 115, 7, false, MAX_BRIGHTNESS_COLOR);
+                        RPU_WPC_DrawRectangleXY(6, 22, (115 * code) / 100, 7, true, MAX_BRIGHTNESS_COLOR);
+                    }
                 } else {
-                    if (!isAlternate) {
+                    char *msg = HPSoundCardCurFlashMessage();
+                    if (msg) {
+                        RPU_WPC_DrawTextToScratchXY("FLASH FAILED", 10, 12, MAX_BRIGHTNESS_COLOR);
+                        RPU_WPC_DrawTextToScratchXY(msg, 10, 21, MAX_BRIGHTNESS_COLOR);
+                    } else if (!isAlternate) {
                         RPU_WPC_DrawTextToScratchXY("FLASHING...", 10, 16, MAX_BRIGHTNESS_COLOR);
                     }
                 }
-            }
-            
+            }        
         }
     } else if (RPUWPCMenuPage==RPU_WPC_MENU_DISPLAY) {
         snprintf(buf, 128, "       DISPLAY");
@@ -968,8 +990,10 @@ void RPU_WPC_DrawMenuPage(bool isAlternate) {
     RPU_WPC_DrawRectangle(0, false, MAX_BRIGHTNESS_COLOR);
     
     if (RPUWPCMenuPage==RPU_WPC_MENU_GAME_STATE) {
+        snprintf(buf, 128, "     LOAD/SAVE");
+        RPU_WPC_DrawTextToScratchXY((const char *)buf, 6, 6, MAX_BRIGHTNESS_COLOR);
         snprintf(buf, 128, "      SETTINGS");
-        RPU_WPC_DrawTextToScratchXY((const char *)buf, 3, 10, MAX_BRIGHTNESS_COLOR);
+        RPU_WPC_DrawTextToScratchXY((const char *)buf, 3, 16, MAX_BRIGHTNESS_COLOR);
     } else if (RPUWPCMenuPage==RPU_WPC_MENU_ROM) {
         snprintf(buf, 128, "         ROM");
         RPU_WPC_DrawTextToScratchXY((const char *)buf, 3, 10, MAX_BRIGHTNESS_COLOR);
@@ -977,7 +1001,7 @@ void RPU_WPC_DrawMenuPage(bool isAlternate) {
         snprintf(buf, 128, "GENERAL");
         RPU_WPC_DrawTextToScratchXY((const char *)buf, 45, 6, MAX_BRIGHTNESS_COLOR);
         snprintf(buf, 128, "ILLUMINATION");
-        RPU_WPC_DrawTextToScratchXY((const char *)buf, 28, 14, MAX_BRIGHTNESS_COLOR);
+        RPU_WPC_DrawTextToScratchXY((const char *)buf, 28, 16, MAX_BRIGHTNESS_COLOR);
     } else if (RPUWPCMenuPage==RPU_WPC_MENU_SOUND_CARD) {
         snprintf(buf, 128, "     SOUND CARD");
         RPU_WPC_DrawTextToScratchXY((const char *)buf, 3, 10, MAX_BRIGHTNESS_COLOR);
@@ -1012,7 +1036,7 @@ bool RPU_WPC_Menu(uint32_t curTicks) {
     }    
 
     // Check for Sound Card Serial Data availability 
-    if (RPUWPCMenuPage == RPU_WPC_MENU_SOUND_CARD && !SoundCardDataValid) {
+    if (RPUWPCMenuPage == RPU_WPC_MENU_SOUND_CARD && RPUWPCSubMenuPage > 0 && !SoundCardDataValid) {
         bool newlyValid = false;
         int16_t l, r;
         
@@ -1028,15 +1052,22 @@ bool RPU_WPC_Menu(uint32_t curTicks) {
                 newlyValid = true;
             } else if (SoundCardEditorMode == 1) {
                 uint16_t numRoms;
-                if (HPSoundCardCurNumROMs(&numRoms)) {
-                    newlyValid = true; // We got the count, stop the error screen
-                    HPSoundCardRequestROMName(NewROMNum); // Immediately ask for the first ROM name
+                if (HPSoundCardCurNumROMs(&numRoms) && HPSoundCardCurROMName() != NULL) { // WAIT FOR BOTH
+                    newlyValid = true; // We got both the count and the name, stop the error screen
                 }
             } else if (SoundCardEditorMode == 2) {
                 uint8_t retCode;
                 SoundCardRequestTicks = curTicks; // Feed the watchdog! Flashing takes time.
                 if (HPSoundCardCurFlashCode(&retCode)) {
-                    newlyValid = true; // Flash sequence completed
+                    if (retCode != LastSoundCardFlashCode) {
+                        LastSoundCardFlashCode = retCode;
+                        RPUWPCSubItemChanged = true; // Redraw new percentage
+                    }
+                    if (retCode >= 100) {
+                        newlyValid = true; // Flash sequence completed
+                    }
+                } else if (HPSoundCardCurFlashMessage() != NULL) {
+                    newlyValid = true; // Flash returned 0xFF ("ERROR")
                 }
             }
         }
