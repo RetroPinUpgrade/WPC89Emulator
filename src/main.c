@@ -1139,6 +1139,56 @@ uint8_t CheckSoundCardVolumes(uint32_t currentTickCount, uint32_t startingTickCo
 }
 
 
+void CheckForFactoryReset(void) {
+    // Read the jumper switch inputs
+    uint8_t jumpers = ASICRead(WPC_SW_JUMPER_INPUT);
+    
+    // 0xFC masks bits 2 through 7. If they are all 0, trigger the reset.
+    if ((jumpers & 0xFC) == 0x00) {
+        
+        // Turn off blanking so the DMD display is visible
+        SetBlanking(false);
+        
+        // Show the reset message on the display
+        RPU_WPC_DisplayShowLogoScreen(0);
+        RPU_WPC_DisplayTextWithLogo("Homepin\nFactory Reset\n(set jumpers)", 2);
+        
+        // Ensure write access to the backup domain is enabled
+        pmu_backup_write_enable();
+        
+        // Clear all persistent backup registers
+        RTC_BKP1 = 0; // Clears RTC_PROOF_VALUE, forcing factory defaults on next boot
+        RTC_BKP2 = 0; // Clears the saved Security PIC ID
+        RTC_BKP3 = 0; // Clears GI game brightness and bulb types
+        RTC_BKP4 = 0; // Clears GI attract brightness and display refresh rates
+        RTC_BKP5 = 0; // Clears Synth, DAC, and CVSD volumes/balances
+        RTC_BKP9 = 0; // Clears auxiliary volume adjustments
+        
+        // Reset the learned PIC ID in the current session
+        SecurityPICSetLearnedID(0);
+        
+        // Clear the active ROM metadata pointers to force a fresh ROM selection
+        HPSDUpdateRomMetadata("", 0);
+        
+        // Halt the system here to prevent further execution. 
+        // The operator must restore the jumpers and power cycle the board.
+        while (1) {
+            uint32_t currentTicks = TwoMHzTicksSinceStart();
+            
+            // Blink the board LED to indicate the halted reset state
+            if ((currentTicks / 500000) % 2) {
+                SetBoardLEDOn();
+            } else {
+                SetBoardLEDOff();
+            }
+            
+            // Continuously service the DMD controller to keep the display active
+            RPU_WPC_DisplayUpdate(FIRQTriggered(), currentTicks);
+        }
+    }
+}
+
+
 
 int main(void) {
     SwitchTo240MHz();
@@ -1174,6 +1224,10 @@ int main(void) {
     if (RPU_WPC_DisplayInit()) {
         SetupDisplay();
     }
+
+    // The jumper switches can indicate a factory reset
+    // if SW13 - SW18 are all off.
+    CheckForFactoryReset();
 
     bool ROMIntegrityFailed = false;
     if (!HPSDCheckROMIntegrity()) {
@@ -1303,6 +1357,9 @@ int main(void) {
 
             if (!pauseEmulationForMenu) {
                 SaveGISettings();
+                if (ROMIntegrityFailed && HPSDCheckROMIntegrity()) {
+                    ROMIntegrityFailed = false;
+                }
                 if (ROMIntegrityFailed) {
                     pauseEmulationForMenu = true;
                     RPU_WPC_DisplayShowLogoScreen(0);

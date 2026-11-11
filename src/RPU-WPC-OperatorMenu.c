@@ -758,7 +758,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
             RPU_WPC_DrawHorizontalLine(78, 95, 21, MAX_BRIGHTNESS_COLOR);
             RPU_WPC_DrawHorizontalLine(102, 119, 21, MAX_BRIGHTNESS_COLOR);
 
-            char v[5][4];
+            char v[5][8];
             for(int i=0; i<5; i++) {
                 if (GIEditorMode && isAlternate && i == GISelectedString) {
                     strcpy(v[i], "   ");
@@ -780,7 +780,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
             RPU_WPC_DrawHorizontalLine(102, 119, 21, MAX_BRIGHTNESS_COLOR);
             ASICSetFlipperStateOverride(true, true);
             
-            char v[5][4];
+            char v[5][8];
             for(int i=0; i<5; i++) {
                 if (GIEditorMode && isAlternate && i == GISelectedString) {
                     strcpy(v[i], "   ");
@@ -801,7 +801,7 @@ void RPU_WPC_DrawSubMenuPage(bool isAlternate) {
             RPU_WPC_DrawHorizontalLine(102, 119, 21, MAX_BRIGHTNESS_COLOR);
             ASICSetFlipperStateOverride(true, false);
 
-            char v[5][4];
+            char v[5][8];
             for(int i=0; i<5; i++) {
                 if (GIEditorMode && isAlternate && i == GISelectedString) {
                     strcpy(v[i], "   ");

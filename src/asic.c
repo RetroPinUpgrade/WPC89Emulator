@@ -651,6 +651,15 @@ uint8_t ASICReadUnfilteredCabinetSwitches() {
 }
 
 
+#define BITMove(r, from, to) ((((r) >> (from)) & 1u) << (to))
+
+static inline uint8_t ASICJumperUnscramble(uint8_t r)
+{
+    return (uint8_t)(BITMove(r,0,0) | BITMove(r,2,1) | BITMove(r,5,2) | BITMove(r,4,3) |
+    BITMove(r,7,4) | BITMove(r,1,5) | BITMove(r,6,6) | BITMove(r,3,7));
+}
+
+
 uint8_t ASICRead(uint16_t offset) {
     uint16_t asicRAMOffset = offset - ASIC_RAM_BASE_ADDRESS;
     uint8_t temp = 0;
@@ -731,7 +740,8 @@ uint8_t ASICRead(uint16_t offset) {
             uint8_t invertedData = ReadDataBus();
             SetJumperSwitchRowLine(true); // turn off U11
             SetDataBusDirection(true); // set data lines to Write
-            ASICDipSwitchSetting = xformRow(invertedData ^ 0xFF);
+            //ASICDipSwitchSetting = xformRow(invertedData ^ 0xFF);
+            ASICDipSwitchSetting = ASICJumperUnscramble(invertedData ^ 0xFF);
             __enable_irq();
 
             return ASICDipSwitchSetting;
